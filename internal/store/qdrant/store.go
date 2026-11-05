@@ -51,9 +51,17 @@ func (s *Store) Close() error { return s.client.Close() }
 func (s *Store) EnsureCollection(ctx context.Context, name string, dim int, quantization string) error {
 	info, err := s.client.GetCollectionsClient().Get(ctx, &qdrant.GetCollectionInfoRequest{CollectionName: name})
 	if err == nil {
-		size := int(info.GetResult().GetConfig().GetParams().GetVectorsConfig().GetParams().GetSize())
-		if size != 0 && size != dim {
+		params := info.GetResult().GetConfig().GetParams()
+		vectors := params.GetVectorsConfig().GetParamsMap().GetMap()
+		dense, ok := vectors["dense"]
+		if !ok {
+			return fmt.Errorf("qdrant: collection %s uses the old unnamed schema; drop it or use another collection (index.collection)", name)
+		}
+		if size := int(dense.GetSize()); size != 0 && size != dim {
 			return fmt.Errorf("qdrant: collection %s has %d dims, this index uses %d; use another collection (index.collection)", name, size, dim)
+		}
+		if params.GetSparseVectorsConfig().GetMap()["sparse"] == nil {
+			return fmt.Errorf("qdrant: collection %s has no sparse vector; use another collection (index.collection)", name)
 		}
 		return nil
 	}
@@ -63,9 +71,11 @@ func (s *Store) EnsureCollection(ctx context.Context, name string, dim int, quan
 
 	create := &qdrant.CreateCollection{
 		CollectionName: name,
-		VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
-			Size:     uint64(dim),
-			Distance: qdrant.Distance_Cosine,
+		VectorsConfig: qdrant.NewVectorsConfigMap(map[string]*qdrant.VectorParams{
+			"dense": {Size: uint64(dim), Distance: qdrant.Distance_Cosine},
+		}),
+		SparseVectorsConfig: qdrant.NewSparseVectorsConfig(map[string]*qdrant.SparseVectorParams{
+			"sparse": {Modifier: ptr(qdrant.Modifier_Idf)},
 		}),
 	}
 	if quantization == "int8" {
@@ -95,7 +105,7 @@ func (s *Store) CollectionDim(ctx context.Context, name string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	return int(info.GetResult().GetConfig().GetParams().GetVectorsConfig().GetParams().GetSize()), nil
+	return int(info.GetResult().GetConfig().GetParams().GetVectorsConfig().GetParamsMap().GetMap()["dense"].GetSize()), nil
 }
 
 // EnsurePayloadIndexes creates the indexes the filter paths depend on.
@@ -139,9 +149,17 @@ func (s *Store) UpsertWithWait(ctx context.Context, collection string, points []
 	}
 	batch := make([]*qdrant.PointStruct, len(points))
 	for i, p := range points {
+		vectors := map[string]*qdrant.Vector{
+			"dense": {Vector: &qdrant.Vector_Dense{Dense: &qdrant.DenseVector{Data: p.Vector}}},
+		}
+		if len(p.SparseIndices) > 0 {
+			vectors["sparse"] = &qdrant.Vector{Vector: &qdrant.Vector_Sparse{Sparse: &qdrant.SparseVector{
+				Indices: p.SparseIndices, Values: p.SparseValues,
+			}}}
+		}
 		batch[i] = &qdrant.PointStruct{
 			Id:      qdrant.NewID(p.ID),
-			Vectors: qdrant.NewVectors(p.Vector...),
+			Vectors: qdrant.NewVectorsMap(vectors),
 			Payload: qdrant.NewValueMap(p.Payload),
 		}
 	}
@@ -160,7 +178,8 @@ func (s *Store) UpsertWithWait(ctx context.Context, collection string, points []
 func (s *Store) Search(ctx context.Context, collection string, vector []float32, limit int, filter map[string]string) ([]Hit, error) {
 	req := &qdrant.QueryPoints{
 		CollectionName: collection,
-		Query:          qdrant.NewQuery(vector...),
+		Query:          qdrant.NewQueryDense(vector),
+		Using:          ptr("dense"),
 		Limit:          ptr(uint64(limit)),
 		WithPayload:    qdrant.NewWithPayload(true),
 	}
@@ -170,6 +189,36 @@ func (s *Store) Search(ctx context.Context, collection string, vector []float32,
 	res, err := s.client.Query(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("qdrant: search %s: %w", collection, err)
+	}
+	out := make([]Hit, 0, len(res))
+	for _, p := range res {
+		out = append(out, Hit{ID: p.GetId().GetUuid(), Score: p.GetScore(), Payload: payloadOf(p.GetPayload())})
+	}
+	return out, nil
+}
+
+// SearchHybrid fuses dense and sparse candidates with RRF. With an empty
+// sparse vector it falls back to dense-only.
+func (s *Store) SearchHybrid(ctx context.Context, collection string, dense []float32, sparseIdx []uint32, sparseVal []float32, limit int, filter map[string]string) ([]Hit, error) {
+	if len(sparseIdx) == 0 {
+		return s.Search(ctx, collection, dense, limit, filter)
+	}
+	req := &qdrant.QueryPoints{
+		CollectionName: collection,
+		Prefetch: []*qdrant.PrefetchQuery{
+			{Query: qdrant.NewQueryDense(dense), Using: ptr("dense"), Limit: ptr(uint64(limit))},
+			{Query: qdrant.NewQuerySparse(sparseIdx, sparseVal), Using: ptr("sparse"), Limit: ptr(uint64(limit))},
+		},
+		Query:       qdrant.NewQueryFusion(qdrant.Fusion_RRF),
+		Limit:       ptr(uint64(limit)),
+		WithPayload: qdrant.NewWithPayload(true),
+	}
+	if len(filter) > 0 {
+		req.Filter = filterFor(filter)
+	}
+	res, err := s.client.Query(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("qdrant: hybrid search %s: %w", collection, err)
 	}
 	out := make([]Hit, 0, len(res))
 	for _, p := range res {

@@ -97,6 +97,8 @@ func run(args []string) error {
 		return cmdSnapshot(args[1:])
 	case "completion":
 		return cmdCompletion(args[1:])
+	case "eval":
+		return cmdEval(args[1:])
 	case "doctor":
 		return cmdDoctor(args[1:])
 	default:
@@ -122,6 +124,7 @@ Comandos:
   service     estado y carga/descarga de modelos en argosd (status|load|unload)
   snapshot    crea, lista, borra o restaura snapshots de una base
   completion  script de autocompletado (bash|zsh|fish)
+  eval        mide recall@k/MRR contra un set de consultas
   doctor      verifica entorno, rutas y modelos
   version     versión del binario
 `)
@@ -1778,6 +1781,9 @@ func cmdSearch(args []string) error {
 			return err
 		}
 	}
+	if *dbName == "all" {
+		return fmt.Errorf("search --db all requiere argosd corriendo (service.url)")
+	}
 
 	modelID := cfg.Defaults.Embedding
 	collection := cfg.Index.Collection
@@ -1788,8 +1794,11 @@ func cmdSearch(args []string) error {
 			return err
 		}
 	}
+	if *dbName == "all" {
+		return fmt.Errorf("search --db all requiere argosd corriendo (service.url)")
+	}
 
-	if *dbName != "" {
+	if *dbName != "" && *dbName != "all" {
 		mgr := dbpkg.New(filepath.Join(cfg.Paths.Home, "dbs"))
 		meta, err := mgr.Get(*dbName)
 		if err != nil {
@@ -2437,4 +2446,91 @@ func rewriteDBArg(args []string, name string) []string {
 		}
 	}
 	return out
+}
+
+// --- eval ------------------------------------------------------------------
+
+type evalSet struct {
+	Queries []struct {
+		Query   string `yaml:"query"`
+		Path    string `yaml:"path"`
+		Heading string `yaml:"heading,omitempty"`
+	} `yaml:"queries"`
+}
+
+// cmdEval runs the eval set through the resident service and reports recall@k
+// and MRR. It needs argosd because loading the model per query would make the
+// measurement meaningless.
+func cmdEval(args []string) error {
+	fs := flag.NewFlagSet("eval", flag.ContinueOnError)
+	dbName := fs.String("db", "", "base a evaluar")
+	k := fs.Int("k", 8, "profundidad de corte")
+	file := fs.String("file", "testdata/eval.yaml", "set de consultas")
+	rerank := fs.String("rerank", "off", "auto|on|off")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, _, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.Service.URL == "" {
+		return fmt.Errorf("eval requiere service.url (argosd)")
+	}
+	raw, err := os.ReadFile(*file)
+	if err != nil {
+		return err
+	}
+	var set evalSet
+	if err := yaml.Unmarshal(raw, &set); err != nil {
+		return fmt.Errorf("eval: %w", err)
+	}
+	if len(set.Queries) == 0 {
+		return fmt.Errorf("eval: %s no tiene consultas", *file)
+	}
+
+	hits, found, mrr := 0, 0, 0.0
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "RESULTADO\tCONSULTA\tESPERADO")
+	for _, q := range set.Queries {
+		rank := rankOf(cfg, *dbName, q.Query, q.Path, *k, *rerank)
+		hits++
+		if rank > 0 {
+			found++
+			mrr += 1.0 / float64(rank)
+			fmt.Fprintf(w, "ok (%d)\t%s\t%s\n", rank, truncate(q.Query, 60), q.Path)
+			continue
+		}
+		fmt.Fprintf(w, "MISS\t%s\t%s\n", truncate(q.Query, 60), q.Path)
+	}
+	w.Flush()
+	fmt.Printf("\nrecall@%d: %d/%d = %.1f%%\n", *k, found, hits, float64(found)/float64(hits)*100)
+	fmt.Printf("MRR: %.3f\n", mrr/float64(hits))
+	return nil
+}
+
+func rankOf(cfg config.Config, db, query, wantPath string, k int, rerank string) int {
+	body, _ := json.Marshal(map[string]any{"query": query, "db": db, "k": k, "rerank": rerank, "max_per_file": 1})
+	resp, err := http.Post(strings.TrimSuffix(cfg.Service.URL, "/")+"/v1/search", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
+	var out struct {
+		Hits []struct {
+			Path string `json:"path"`
+		} `json:"hits"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&out) != nil {
+		return 0
+	}
+	for i, h := range out.Hits {
+		if strings.TrimPrefix(h.Path, "./") == strings.TrimPrefix(wantPath, "./") {
+			return i + 1
+		}
+	}
+	return 0
 }

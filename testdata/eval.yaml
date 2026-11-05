@@ -1,0 +1,65 @@
+version: 1
+description: Eval baseline generado desde títulos del vault; refinar a mano
+queries:
+- query: ¿Qué documenta «Signify — Intern Sales Support»?
+  path: work/applications/signify/intern-sales-support/readme.md
+- query: ¿Qué documenta «Teoría del Profesor»?
+  path: university/aleeza/espanol/knowledge/raw/profesor/espanol-knowledge-raw-profesor-index.md
+- query: ¿Qué documenta «Godmode»?
+  path: learning/projects/system/hermes-official-docs/official-documentation/user-guide-skills-optional-security-security-godmode.md
+- query: ¿Qué documenta «Millicom (Tigo) — Pasantía Analítica de Datos B2C (Aplicación)»?
+  path: work/applications/millicom-tigo/pasantia-analitica-datos-b2c/aplicacion.md
+- query: '¿Qué documenta «Parcial 1 — Funciones y Gráficas (GUÍA COMPLETA con Taller
+    #1 resuelto)»?'
+  path: university/emmanuel/fundamentos-de-matematicas-2/midterms/parcial-1/funciones-y-graficas/funciones-y-graficas-guia-completa-parcial-1.md
+- query: ¿Qué documenta «::slotted()»?
+  path: learning/frontend/css/official-documentation/pseudo-elements/slotted.md
+- query: ¿Qué documenta «Manual de CachyOS — Uso Diario»?
+  path: system/knowledge/cachyos-daily-manual.md
+- query: ¿Qué documenta «Auditoría Knowledge/system/ — 2026-09-16»?
+  path: system/reports/audits/2026-09-16-system-audit.md
+- query: ¿Qué documenta «Raw»?
+  path: university/emmanuel/desarrollo-de-software/knowledge/raw/desarrollo-de-software-knowledge-raw-index.md
+- query: '¿Qué documenta «Knowledge: Formato DOCX (lecciones)»?'
+  path: system/knowledge/lessons/formatos-docx.md
+- query: ¿Qué documenta «Companies — Readme»?
+  path: work/companies/companies-readme.md
+- query: ¿Qué documenta «Sistemas de archivos»?
+  path: learning/linux/distros/cachyos/official-documentation/installation/filesystem.md
+- query: ¿Qué documenta «Recordatorio próxima sesión Work (creado 2026-09-23)»?
+  path: notes/work-reminders.md
+- query: '¿Qué documenta «Módulo 4: Depreciación Lineal»?'
+  path: university/aleeza/matematica-para-administracion-1/finals/topics/practice/depreciacion-lineal.md
+- query: ¿Qué documenta «Docx Template»?
+  path: university/aleeza/templates/docx-template/templates-docx-template-index.md
+- query: ¿Qué documenta «Excalidraw Data»?
+  path: notes/notes/fundamento-de-matematicas-2/Limites/evaluacion-limites-infinitos.excalidraw.md
+- query: ¿Qué documenta «Análisis DX / docs / AI_POLICY / governance / community —
+    gentle-ai vs sistema Parallel»?
+  path: system/reports/2026-09-21-gentle-ai-dx-governance-analysis.md
+- query: ¿Qué documenta «Limites»?
+  path: Limites.md
+- query: ¿Qué documenta «Excalidraw Data»?
+  path: notes/notes/fundamento-de-matematicas-2/Untitled/tipos-discontinuidad.excalidraw.md
+- query: ¿Qué documenta «Workshops»?
+  path: university/aleeza/matematica-para-administracion-1/workshops/matematica-para-administracion-1-workshops-index.md
+- query: '¿Qué documenta «📐 Skill META: standardize-script-structure»?'
+  path: system/skills/legacy-cline/standardize-script-structure.md
+- query: ¿Qué documenta «Enunciado real de los problemas»?
+  path: notes/notes/fundamento-de-matematicas-2/Enunciado real de los problemas.md
+- query: '¿Qué documenta «08 — Async Types: Promises, async/await y Awaited»?'
+  path: learning/languages/typescript/async/async-types-promises-y-async-await.md
+- query: ¿Qué documenta «padding-inline»?
+  path: learning/frontend/css/official-documentation/properties/padding-inline.md
+- query: ¿Qué documenta «Barbarro IA — Índice»?
+  path: work/companies/barbarro-ia/barbarro-ia-readme.md
+- query: ¿Qué documenta «Excalidraw Data»?
+  path: notes/notes/fundamento-de-matematicas-2/Limites/concepto-limites.excalidraw.md
+- query: ¿Qué documenta «KDE Plasma en CachyOS»?
+  path: learning/linux/distros/cachyos/personalizacion/plasma/index.md
+- query: ¿Qué documenta «practica bicola»?
+  path: notes/notes/quicknotes/practica-bicola.md
+- query: ¿Qué documenta «Knowledge Base — Home»?
+  path: Home.md
+- query: ¿Qué documenta «Knowledge Vault — README»?
+  path: vault-readme.md

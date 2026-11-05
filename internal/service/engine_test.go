@@ -27,6 +27,10 @@ func (f *fakeStore) Search(context.Context, string, []float32, int, map[string]s
 	return f.hits, nil
 }
 
+func (f *fakeStore) SearchHybrid(context.Context, string, []float32, []uint32, []float32, int, map[string]string) ([]types.Hit, error) {
+	return f.hits, nil
+}
+
 func (f *fakeStore) Health(context.Context) error { return nil }
 
 type fakeReranker struct{}
@@ -47,8 +51,10 @@ func catalog() *registry.Catalog {
 	}}
 }
 
-func hit(path, text string, score float32) types.Hit {
-	return types.Hit{Score: score, Payload: map[string]any{"path": path, "text": text, "heading": "H"}}
+func hit(path, text string, score float32, index int) types.Hit {
+	return types.Hit{Score: score, Payload: map[string]any{
+		"path": path, "text": text, "heading": "H", "chunk_index": int64(index),
+	}}
 }
 
 func testConfig(t *testing.T) config.Config {
@@ -64,7 +70,7 @@ func testConfig(t *testing.T) config.Config {
 func TestSearchUsesDefaults(t *testing.T) {
 	cfg := testConfig(t)
 	emb := &fakeEmbedder{}
-	e := New(cfg, catalog(), &fakeStore{hits: []types.Hit{hit("a.md", "uno", 0.9), hit("a.md", "dos", 0.8), hit("a.md", "tres", 0.7)}}, Factories{
+	e := New(cfg, catalog(), &fakeStore{hits: []types.Hit{hit("a.md", "uno", 0.9, 1), hit("a.md", "dos", 0.8, 2), hit("a.md", "tres", 0.7, 3)}}, Factories{
 		Embedder: func(registry.Model, int) (Embedder, error) { return emb, nil },
 	})
 	resp, err := e.Search(context.Background(), SearchRequest{Query: "q", K: 2, Rerank: "off"})
@@ -84,7 +90,7 @@ func TestSearchUsesDefaults(t *testing.T) {
 
 func TestRerankerReordersAndLoadsOnce(t *testing.T) {
 	cfg := testConfig(t)
-	e := New(cfg, catalog(), &fakeStore{hits: []types.Hit{hit("a.md", "malo", 0.9), hit("b.md", "bueno", 0.5)}}, Factories{
+	e := New(cfg, catalog(), &fakeStore{hits: []types.Hit{hit("a.md", "malo", 0.9, 4), hit("b.md", "bueno", 0.5, 5)}}, Factories{
 		Embedder: func(registry.Model, int) (Embedder, error) { return &fakeEmbedder{}, nil },
 		Reranker: func(registry.Model) (Reranker, error) { return fakeReranker{}, nil },
 	})
@@ -107,7 +113,7 @@ func TestRerankerReordersAndLoadsOnce(t *testing.T) {
 
 func TestRerankOnWithoutModelFails(t *testing.T) {
 	cfg := testConfig(t)
-	e := New(cfg, catalog(), &fakeStore{hits: []types.Hit{hit("a.md", "x", 0.9)}}, Factories{
+	e := New(cfg, catalog(), &fakeStore{hits: []types.Hit{hit("a.md", "x", 0.9, 6)}}, Factories{
 		Embedder: func(registry.Model, int) (Embedder, error) { return &fakeEmbedder{}, nil },
 		Reranker: func(registry.Model) (Reranker, error) { return nil, errors.New("no instalado") },
 	})

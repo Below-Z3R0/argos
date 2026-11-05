@@ -31,6 +31,11 @@ RAG actual en Python con `multilingual-e5-large` (1024 dims), chunk 512/50, RRF 
 - **CLI con fast path:** `search` usa `argosd` cuando responde (66 ms total, 50 ms de motor).
 - **Servicio `argosd`:** modelos residentes + `/v1/search` y `/v1/status`; 3.3 s la primera consulta
   (carga) y **58 ms** las siguientes. Concurrencia serializada por mutex en la sesión ONNX.
+- **Híbrido:** dense + sparse (TF, `Modifier: Idf` en Qdrant) con `Prefetch` y fusión RRF. Los
+  scores son RRF (≈0.016), no coseno: `--min-score` queda sin calibrar.
+- **Cross-DB:** `--db all` en engine y CLI, fusión por rango entre bases.
+- **Eval:** `argosctl eval` mide recall@k y MRR contra `testdata/eval.yaml` (30 consultas generadas
+  desde títulos; el set hay que refinarlo a mano).
 - **Búsqueda:** `search` con pool, tope por archivo, `--min-score`, salida JSON y reranker opcional.
 - **Reranker:** cross-encoder bge-v2-m3 con plantilla `<s> q </s> </s> p </s>`, sigmoid y umbral.
 - **Reranker medido:** 460 ms/par sin lote; 3.9 s con lote 8 y par truncado a 384 tokens.

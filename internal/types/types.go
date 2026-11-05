@@ -5,9 +5,11 @@ package types
 
 // Point is one vector plus its payload, independent of the store driver.
 type Point struct {
-	ID      string
-	Vector  []float32
-	Payload map[string]any
+	ID            string
+	Vector        []float32 // dense
+	SparseIndices []uint32
+	SparseValues  []float32
+	Payload       map[string]any
 }
 
 // Hit is a search result, independent of the store driver.

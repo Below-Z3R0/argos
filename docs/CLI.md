@@ -83,6 +83,9 @@ argosctl search "<q>" [--db NOMBRE] [-k 20] [--max-per-file 2]
 - `--rerank auto` usa el reranker si está instalado; `on` falla si falta; `off` solo vectorial.
 - `--rerank-depth 0` rerankea todo el pool (`k × 3`).
 - `--json` devuelve `{query, collection, elapsed_ms, hits}`.
+- La búsqueda es híbrida (dense + sparse + RRF). Los scores son de fusión (~0.016), así que
+  `--min-score` todavía no está calibrado.
+- `eval --file testdata/eval.yaml --db N` mide recall@k y MRR contra el set.
 - `models list` separa `INSTALADO` (disco), `DEFAULT` y `MEMORIA` (consultado a `argosd`).
 - Si `service.url` responde, `search` va por `argosd` (modelos residentes, ~50 ms); si no, cae al
   pipeline local (carga el modelo, ~3 s).
@@ -164,7 +167,7 @@ argosctl config path|list|get <k>|set <k> <v>
 | Instalar / quitar modelo | `models install/remove` | cubierto |
 | Buscar en una base (single table) | `search --db N` | cubierto |
 | Buscar en varias tablas | `search --db a,b` | cubierto |
-| Buscar en todas | `search --db all` | pendiente (bloque híbrido/cross-DB) |
+| Buscar en todas | `search --db all` | implementado |
 | Buscar solo las bases de un modelo | `search --model ID` | **agregado** |
 | Excluir una base de la búsqueda | `--exclude-db` | **agregado** |
 | Reordenar por relevancia real | `--rerank auto` (default) | **agregado** |

@@ -14,6 +14,7 @@ import (
 	"github.com/Below-Z3R0/argos/internal/manifest"
 	"github.com/Below-Z3R0/argos/internal/parse"
 	"github.com/Below-Z3R0/argos/internal/parse/layout"
+	"github.com/Below-Z3R0/argos/internal/sparse"
 	"github.com/Below-Z3R0/argos/internal/types"
 	"github.com/Below-Z3R0/argos/internal/vault"
 )
@@ -226,9 +227,12 @@ func indexFile(
 		}
 		points := make([]types.Point, len(toEmbed))
 		for i, c := range toEmbed {
+			sv := sparse.Encode(c.Text)
 			points[i] = types.Point{
-				ID:     c.ID,
-				Vector: vecs[i],
+				ID:            c.ID,
+				Vector:        vecs[i],
+				SparseIndices: sv.Indices,
+				SparseValues:  sv.Values,
 				Payload: map[string]any{
 					"path":         file.Rel,
 					"heading":      c.Heading,

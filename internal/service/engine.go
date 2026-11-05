@@ -19,6 +19,7 @@ import (
 	dbpkg "github.com/Below-Z3R0/argos/internal/db"
 	"github.com/Below-Z3R0/argos/internal/metrics"
 	"github.com/Below-Z3R0/argos/internal/registry"
+	"github.com/Below-Z3R0/argos/internal/sparse"
 	"github.com/Below-Z3R0/argos/internal/types"
 )
 
@@ -32,6 +33,7 @@ type Embedder interface {
 // Store searches a collection.
 type Store interface {
 	Search(ctx context.Context, collection string, vector []float32, limit int, filter map[string]string) ([]types.Hit, error)
+	SearchHybrid(ctx context.Context, collection string, dense []float32, sparseIdx []uint32, sparseVal []float32, limit int, filter map[string]string) ([]types.Hit, error)
 	Health(ctx context.Context) error
 }
 
@@ -61,6 +63,7 @@ type SearchRequest struct {
 
 // Hit is one result returned to the client.
 type Hit struct {
+	DB         string  `json:"db,omitempty"`
 	Path       string  `json:"path"`
 	Heading    string  `json:"heading"`
 	Text       string  `json:"text"`
@@ -170,25 +173,68 @@ func (e *Engine) Search(ctx context.Context, req SearchRequest) (SearchResponse,
 		req.Rerank = "auto"
 	}
 
-	target, err := e.Resolve(req.DB)
-	if err != nil {
-		return SearchResponse{}, err
-	}
-	emb, err := e.embedderFor(target)
-	if err != nil {
-		return SearchResponse{}, err
-	}
-	vec, err := emb.EmbedQuery(ctx, req.Query)
-	if err != nil {
-		return SearchResponse{}, err
+	pool := req.K * 3
+	targets := []Target{}
+	if req.DB == "all" {
+		list, err := e.dbs.List()
+		if err != nil {
+			return SearchResponse{}, err
+		}
+		if len(list) == 0 {
+			return SearchResponse{}, fmt.Errorf("no hay bases registradas")
+		}
+		for _, meta := range list {
+			targets = append(targets, Target{Name: meta.Name, Collection: meta.Collection, ModelID: meta.Model, Dims: meta.Dims})
+		}
+	} else {
+		target, err := e.Resolve(req.DB)
+		if err != nil {
+			return SearchResponse{}, err
+		}
+		targets = append(targets, target)
 	}
 
-	pool := req.K * 3
-	hits, err := e.store.Search(ctx, target.Collection, vec, pool, req.Filter)
-	if err != nil {
-		return SearchResponse{}, err
+	sv := sparse.Encode(req.Query)
+	type fused struct {
+		hit   Hit
+		score float64
 	}
-	results := toHits(hits)
+	merged := map[string]*fused{}
+	for _, target := range targets {
+		emb, err := e.embedderFor(target)
+		if err != nil {
+			return SearchResponse{}, err
+		}
+		vec, err := emb.EmbedQuery(ctx, req.Query)
+		if err != nil {
+			return SearchResponse{}, err
+		}
+		hits, err := e.store.SearchHybrid(ctx, target.Collection, vec, sv.Indices, sv.Values, pool, req.Filter)
+		if err != nil {
+			return SearchResponse{}, err
+		}
+		for rank, h := range toHits(hits) {
+			h.DB = target.Name
+			key := h.DB + "|" + h.Path + "|" + fmt.Sprint(h.ChunkIndex)
+			contribution := 1.0 / float64(60+rank+1)
+			if cur, ok := merged[key]; ok {
+				cur.score += contribution
+				continue
+			}
+			merged[key] = &fused{hit: h, score: contribution}
+		}
+	}
+	results := make([]Hit, 0, len(merged))
+	keys := make([]string, 0, len(merged))
+	for k := range merged {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return merged[keys[i]].score > merged[keys[j]].score })
+	for _, k := range keys {
+		h := merged[k].hit
+		h.Score = merged[k].score
+		results = append(results, h)
+	}
 
 	if req.Rerank != "off" {
 		rr, rerr := e.rerankerFor()
@@ -227,26 +273,30 @@ func (e *Engine) Search(ctx context.Context, req SearchRequest) (SearchResponse,
 		if req.MinScore > 0 && r.Score < req.MinScore {
 			continue
 		}
-		if perFile[r.Path] >= req.MaxPerFile {
+		fileKey := r.DB + "|" + r.Path
+		if perFile[fileKey] >= req.MaxPerFile {
 			continue
 		}
-		perFile[r.Path]++
+		perFile[fileKey]++
 		out = append(out, r)
 		if len(out) == req.K {
 			break
 		}
 	}
 
-	e.metrics.Inc("argos_search_total", metrics.Labels{"db": target.Name, "model": target.ModelID})
+	dbLabel, modelLabel := "all", "mixed"
+	if len(targets) == 1 {
+		dbLabel, modelLabel = targets[0].Name, targets[0].ModelID
+	}
+	e.metrics.Inc("argos_search_total", metrics.Labels{"db": dbLabel, "model": modelLabel})
 	e.metrics.Add("argos_hits_total", float64(len(out)), nil)
-	return SearchResponse{
-		Query:      req.Query,
-		DB:         target.Name,
-		Collection: target.Collection,
-		Model:      target.ModelID,
-		ElapsedMS:  time.Since(start).Milliseconds(),
-		Hits:       out,
-	}, nil
+	resp := SearchResponse{Query: req.Query, ElapsedMS: time.Since(start).Milliseconds(), Hits: out}
+	if len(targets) == 1 {
+		resp.DB, resp.Collection, resp.Model = targets[0].Name, targets[0].Collection, targets[0].ModelID
+	} else {
+		resp.DB, resp.Collection, resp.Model = "all", "all", "mixed"
+	}
+	return resp, nil
 }
 
 // Status describes what is loaded.
