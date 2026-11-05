@@ -239,37 +239,71 @@ func (r *Reranker) encode(text string) ([]int64, error) {
 	return out, nil
 }
 
-// specialIDs reads the ids of <s> and </s> from the unigram vocabulary.
-// The index in the list is the id; the float next to the token is its score.
+// specialIDs reads the ids of <s> and </s>. Tokenizers come in two shapes:
+// Unigram stores vocab as a list of [token, score] pairs (the index is the
+// id), BPE stores a token->id map. Added tokens are checked first because
+// some exports only declare the markers there.
 func specialIDs(path string) ([2]int64, error) {
-	var ids [2]int64 = [2]int64{0, 2}
+	var ids [2]int64
+	var found [2]bool
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ids, err
 	}
 	var doc struct {
+		AddedTokens []struct {
+			ID      int64  `json:"id"`
+			Content string `json:"content"`
+		} `json:"added_tokens"`
 		Model struct {
-			Vocab []json.RawMessage `json:"vocab"`
+			Vocab json.RawMessage `json:"vocab"`
 		} `json:"model"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return ids, fmt.Errorf("rerank: parse tokenizer: %w", err)
 	}
-	for i, raw := range doc.Model.Vocab {
-		var pair []json.RawMessage
-		if err := json.Unmarshal(raw, &pair); err != nil || len(pair) == 0 {
-			continue
-		}
-		var token string
-		if err := json.Unmarshal(pair[0], &token); err != nil {
-			continue
-		}
+	set := func(token string, id int64) {
 		switch token {
 		case "<s>":
-			ids[0] = int64(i)
+			ids[0], found[0] = id, true
 		case "</s>":
-			ids[1] = int64(i)
+			ids[1], found[1] = id, true
 		}
+	}
+	for _, t := range doc.AddedTokens {
+		set(t.Content, t.ID)
+	}
+	vocab := strings.TrimSpace(string(doc.Model.Vocab))
+	switch {
+	case strings.HasPrefix(vocab, "["):
+		var pairs []json.RawMessage
+		if err := json.Unmarshal(doc.Model.Vocab, &pairs); err != nil {
+			return ids, fmt.Errorf("rerank: parse unigram vocab: %w", err)
+		}
+		for i, raw := range pairs {
+			var pair []json.RawMessage
+			if err := json.Unmarshal(raw, &pair); err != nil || len(pair) == 0 {
+				continue
+			}
+			var token string
+			if err := json.Unmarshal(pair[0], &token); err != nil {
+				continue
+			}
+			set(token, int64(i))
+		}
+	case strings.HasPrefix(vocab, "{"):
+		var table map[string]int64
+		if err := json.Unmarshal(doc.Model.Vocab, &table); err != nil {
+			return ids, fmt.Errorf("rerank: parse bpe vocab: %w", err)
+		}
+		for token, id := range table {
+			set(token, id)
+		}
+	default:
+		return ids, errors.New("rerank: tokenizer has no vocabulary")
+	}
+	if !found[0] || !found[1] {
+		return ids, fmt.Errorf("rerank: tokenizer does not declare <s> and </s> (found %v/%v)", found[0], found[1])
 	}
 	return ids, nil
 }

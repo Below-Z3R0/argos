@@ -19,12 +19,14 @@ type Snapshot struct {
 	Checksum  string `json:"checksum,omitempty"`
 }
 
-// restBase is the HTTP endpoint derived from the gRPC host.
-// Qdrant serves REST on 6333 by convention, which is the port the compose
-// publishes; the gRPC port is 6334.
+// restBase is the HTTP endpoint. Qdrant serves REST on 6333 by convention,
+// which is the port the compose publishes; when the deployment is remote or
+// re-mapped, qdrant.rest_url overrides it.
 func (s *Store) restBase() string {
-	host := s.host
-	return "http://" + host + ":6333"
+	if s.restURL != "" {
+		return s.restURL
+	}
+	return "http://" + s.host + ":6333"
 }
 
 func (s *Store) rest(ctx context.Context, method, path string, body any) ([]byte, error) {
@@ -99,7 +101,7 @@ func (s *Store) DeleteSnapshot(ctx context.Context, collection, name string) err
 // while the node's own file keeps working and lets Qdrant recreate it.
 func (s *Store) RestoreSnapshot(ctx context.Context, collection, name string) error {
 	locations := []string{
-		fmt.Sprintf("file:///qdrant/snapshots/%s/%s", collection, name),
+		fmt.Sprintf("file://%s/%s/%s", s.snapshotsPath, collection, name),
 		fmt.Sprintf("%s/collections/%s/snapshots/%s", s.restBase(), collection, name),
 	}
 	var lastErr error

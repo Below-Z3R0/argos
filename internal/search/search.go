@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Below-Z3R0/argos/internal/sparse"
 	"github.com/Below-Z3R0/argos/internal/types"
 )
 
@@ -21,6 +22,12 @@ type Embedder interface {
 // Store runs the vector search.
 type Store interface {
 	Search(ctx context.Context, collection string, vector []float32, limit int, filter map[string]string) ([]types.Hit, error)
+}
+
+// HybridStore adds the sparse+dense path. The Searcher only requires it when
+// Hybrid is enabled, so a dense-only fake still works in tests.
+type HybridStore interface {
+	SearchHybrid(ctx context.Context, collection string, dense []float32, sparseIdx []uint32, sparseVal []float32, limit int, filter map[string]string) ([]types.Hit, error)
 }
 
 // Reranker scores (query, passage) pairs.
@@ -40,6 +47,7 @@ type Searcher struct {
 	MinScore    float64
 	RerankDepth int // candidates sent to the reranker
 	Filter      map[string]string
+	Hybrid      bool // dense+sparse with RRF; false is dense-only
 }
 
 // Result is one passage returned to the caller.
@@ -75,7 +83,17 @@ func (s Searcher) Search(ctx context.Context, query string) ([]Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("search: embed query: %w", err)
 	}
-	hits, err := s.Store.Search(ctx, s.Collection, vec, s.Pool, s.Filter)
+	var hits []types.Hit
+	if s.Hybrid {
+		hybrid, ok := s.Store.(HybridStore)
+		if !ok {
+			return nil, fmt.Errorf("search: el store no soporta búsqueda híbrida")
+		}
+		sv := sparse.Encode(query)
+		hits, err = hybrid.SearchHybrid(ctx, s.Collection, vec, sv.Indices, sv.Values, s.Pool, s.Filter)
+	} else {
+		hits, err = s.Store.Search(ctx, s.Collection, vec, s.Pool, s.Filter)
+	}
 	if err != nil {
 		return nil, err
 	}

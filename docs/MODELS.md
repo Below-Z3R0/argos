@@ -33,6 +33,7 @@ models:
     specs:
       params: "0.6B"
       dims: 1024
+      default_dims: 512          # tamaño que usa Argos si index.dims = 0
       max_tokens: 32768
       pooling: last_token
       quant: int8
@@ -51,7 +52,11 @@ Reglas del esquema:
 - `id` no cambia nunca: es lo que queda grabado en `meta.json` de cada base.
 - `sha256` vacío significa **no instalable** hasta que se complete (`--allow-unpinned` lo permite,
   con advertencia).
-- `specs.ram_mb` es un **presupuesto conservador** (pesos + arena de ORT + activaciones del lote), no una medición. El spike de la fase 0 mide el RSS real y reemplaza el valor.
+- `specs.default_dims` es el tamaño efectivo cuando `index.dims` no se setea. Para modelos MRL es la
+  truncación probada (Qwen3: 512 de 1024); para modelos sin MRL es el tamaño nativo (e5: 768, bge-m3:
+  1024). `config set index.dims N` lo overrides; `config reset index.dims` vuelve al catálogo.
+- `specs.ram_mb` es un **presupuesto conservador** (pesos + arena de ORT + activaciones del lote), no
+  una medición. El spike de la fase 0 mide el RSS real y reemplaza el valor.
 - `homepage` apunta al modelo oficial; `files[].url` al artefacto exacto.
 
 ### Orden de listado
@@ -178,13 +183,13 @@ Con `--force` borra el directorio y avisa qué bases quedan apuntando a un model
 ## Integración con el resto del CLI
 
 - `db create` sin `--model` usa el default del catálogo; con `--model` fija ese.
-- Cada base guarda `model` y `specs.dims` en `meta.json`. Cambiar el default **no** las afecta,
-  porque los vectores de otro modelo no son comparables.
+- Cada base guarda `model`, `dims` y `quantization` en `meta.json`. Cambiar el default **no** las
+  afecta, porque los vectores de otro modelo no son comparables.
+- Las dims de una base nueva salen de `specs.default_dims` del modelo; `index.dims` solo las override
+  y `config reset index.dims` vuelve al catálogo.
 - `db reindex --new-model M` crea una generación nueva con ese modelo.
 - `search --db all` agrupa las bases por modelo, calcula el vector de la consulta una vez por modelo
   distinto y fusiona por **rango** (RRF): los scores de modelos distintos no se comparan.
-- `search --model <id>` restringe el conjunto a las bases que usan ese modelo; `db list --model <id>`
-  muestra cuáles son.
 - `doctor` reporta modelo default, presencia y hash.
 
 ## Runtime

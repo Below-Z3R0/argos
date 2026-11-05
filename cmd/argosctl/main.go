@@ -398,7 +398,7 @@ func modelsCatalog(args []string) error {
 			continue
 		}
 		_, ok := store.Status(m.Task, m.ID)
-		size := fmt.Sprintf("%dx%d", m.Specs.Dims, m.Specs.MaxTokens)
+		size := fmt.Sprintf("%dx%d", m.EffectiveDims(), m.Specs.MaxTokens)
 		if m.Task == registry.TaskReranker {
 			size = fmt.Sprintf("%d capas", m.Specs.DecoderLayers)
 			if m.Specs.MaxTokens > 0 {
@@ -450,7 +450,11 @@ func modelsShow(args []string) error {
 	fmt.Printf("  tarea      %s · tier %s\n", m.Task, m.Tier)
 	fmt.Printf("  params     %s\n", m.Specs.Params)
 	if m.Specs.Dims > 0 {
-		fmt.Printf("  dims       %d\n", m.Specs.Dims)
+		extra := ""
+		if m.EffectiveDims() != m.Specs.Dims {
+			extra = fmt.Sprintf(" (default %d)", m.EffectiveDims())
+		}
+		fmt.Printf("  dims       %d%s\n", m.Specs.Dims, extra)
 	}
 	if m.Specs.DecoderLayers > 0 {
 		fmt.Printf("  capas      %d\n", m.Specs.DecoderLayers)
@@ -842,7 +846,7 @@ func cmdDoctor(args []string) error {
 	// Qdrant: reachable and consistent with the configured dimension.
 	if host, portStr, err := net.SplitHostPort(cfg.Qdrant.URL); err == nil {
 		if port, perr := strconv.Atoi(portStr); perr == nil {
-			if st, serr := qstore.New(host, port); serr == nil {
+			if st, serr := qstore.NewWithREST(host, port, cfg.Qdrant.RESTURL, cfg.Qdrant.SnapshotsPath); serr == nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 				dim, derr := st.CollectionDim(ctx, cfg.Index.Collection)
 				cancel()
@@ -985,7 +989,24 @@ func cmdConfig(args []string) error {
 		if err := cfg.Save(cfgPath); err != nil {
 			return err
 		}
+		if args[1] == "index.dims" {
+			warnDimsMismatch(cfg)
+		}
 		fmt.Printf("%s = %s\n", args[1], args[2])
+		return nil
+	case "reset":
+		if len(args) != 2 {
+			return fmt.Errorf("%w: config reset <clave>", errUsage)
+		}
+		if err := resetKey(cfgPath, args[1]); err != nil {
+			return err
+		}
+		effective, _, err := loadConfig()
+		if err == nil {
+			if v, gerr := getKey(effective, args[1]); gerr == nil {
+				fmt.Printf("%s = %s (default)\n", args[1], v)
+			}
+		}
 		return nil
 	default:
 		return fmt.Errorf("%w: config %s", errUsage, args[0])
@@ -1028,6 +1049,12 @@ func getKey(cfg config.Config, key string) (string, error) {
 		return fmt.Sprint(cfg.Resources.Batch), nil
 	case "qdrant.url":
 		return cfg.Qdrant.URL, nil
+	case "qdrant.rest_url":
+		return cfg.Qdrant.RESTURL, nil
+	case "qdrant.snapshots_path":
+		return cfg.Qdrant.SnapshotsPath, nil
+	case "search.hybrid":
+		return strconv.FormatBool(cfg.Search.Hybrid), nil
 	case "service.url":
 		return cfg.Service.URL, nil
 	case "index.collection":
@@ -1089,12 +1116,26 @@ func setKey(cfg *config.Config, key, value string) error {
 		cfg.Service.URL = value
 	case "qdrant.url":
 		cfg.Qdrant.URL = value
+	case "qdrant.rest_url":
+		cfg.Qdrant.RESTURL = strings.TrimSuffix(value, "/")
+	case "qdrant.snapshots_path":
+		cfg.Qdrant.SnapshotsPath = value
+	case "search.hybrid":
+		b, err := strconv.ParseBool(value)
+		if err != nil {
+			return fmt.Errorf("search.hybrid debe ser true o false")
+		}
+		cfg.Search.Hybrid = b
 	case "index.collection":
 		cfg.Index.Collection = value
 	case "index.dims":
+		if value == "auto" {
+			cfg.Index.Dims = 0
+			break
+		}
 		n, err := strconv.Atoi(value)
 		if err != nil {
-			return fmt.Errorf("index.dims debe ser un número")
+			return fmt.Errorf("index.dims debe ser un número o auto")
 		}
 		cfg.Index.Dims = n
 	case "index.quantization":
@@ -1123,6 +1164,68 @@ func setKey(cfg *config.Config, key, value string) error {
 		return fmt.Errorf("%w: clave %q", errUsage, key)
 	}
 	return cfg.Validate()
+}
+
+// warnDimsMismatch is informational: index.dims only affects new collections,
+// so changing it never rewrites an existing base.
+func warnDimsMismatch(cfg config.Config) {
+	mgr := dbpkg.New(filepath.Join(cfg.Paths.Home, "dbs"))
+	list, err := mgr.List()
+	if err != nil {
+		return
+	}
+	for _, meta := range list {
+		fmt.Fprintf(os.Stderr, "aviso: %s ya usa %d dims; index.dims solo aplica a bases nuevas (db reindex --new-model)\n",
+			meta.Name, meta.Dims)
+	}
+}
+
+// resetKey removes one key from the YAML file so the code default returns.
+// It edits the raw document instead of saving the loaded struct, which would
+// also materialize every other default.
+func resetKey(path, key string) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("no hay configuración en %s", path)
+	}
+	if err != nil {
+		return err
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	parts := strings.Split(key, ".")
+	cur := doc
+	for _, part := range parts[:len(parts)-1] {
+		next, ok := cur[part].(map[string]any)
+		if !ok {
+			return fmt.Errorf("clave %q no existe", key)
+		}
+		cur = next
+	}
+	last := parts[len(parts)-1]
+	if _, ok := cur[last]; !ok {
+		return fmt.Errorf("clave %q no existe", key)
+	}
+	delete(cur, last)
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.yaml")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(out); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // --- index -----------------------------------------------------------------
@@ -1300,7 +1403,7 @@ func runIndex(cfg config.Config, files []vault.File, chunkCfg config.Chunking, f
 		TokenizerPath: filepath.Join(dir, "tokenizer.json"),
 		LibraryPath:   ortLib(cfg),
 		Name:          m.ID,
-		Dims:          dimsOrModel(cfg.Index.Dims, m.Specs.Dims),
+		Dims:          effectiveDims(m, cfg.Index.Dims),
 		MaxTokens:     m.Specs.MaxTokens,
 		Pooling:       m.Specs.Pooling,
 		QueryInstruct: m.QueryInstruction,
@@ -1323,7 +1426,7 @@ func runIndex(cfg config.Config, files []vault.File, chunkCfg config.Chunking, f
 	if err != nil {
 		return fmt.Errorf("qdrant.url puerto inválido: %w", err)
 	}
-	st, err := qstore.New(host, port)
+	st, err := qstore.NewWithREST(host, port, cfg.Qdrant.RESTURL, cfg.Qdrant.SnapshotsPath)
 	if err != nil {
 		return err
 	}
@@ -1398,12 +1501,14 @@ func warnTruncation(m registry.Model, dims int) {
 	}
 }
 
-// dimsOrModel uses the configured truncation, or the model's own size.
-func dimsOrModel(configured, modelDims int) int {
+// effectiveDims applies an explicit override, or the catalogue default for
+// that model. Models without Matryoshka default to their native size, so a
+// global 512 can no longer truncate e5 by accident.
+func effectiveDims(m registry.Model, configured int) int {
 	if configured > 0 {
 		return configured
 	}
-	return modelDims
+	return m.EffectiveDims()
 }
 
 // safeName keeps a collection name usable as a directory.
@@ -1596,10 +1701,7 @@ func dbCreate(cfg config.Config, mgr *dbpkg.Manager, args []string) error {
 	if err != nil {
 		return err
 	}
-	dims := cfg.Index.Dims
-	if dims == 0 {
-		dims = m.Specs.Dims
-	}
+	dims := effectiveDims(m, cfg.Index.Dims)
 	warnTruncation(m, dims)
 	meta, err := mgr.Create(dbpkg.Meta{
 		Name:         name,
@@ -1620,7 +1722,7 @@ func dbCreate(cfg config.Config, mgr *dbpkg.Manager, args []string) error {
 	if err != nil {
 		return err
 	}
-	st, err := qstore.New(host, port)
+	st, err := qstore.NewWithREST(host, port, cfg.Qdrant.RESTURL, cfg.Qdrant.SnapshotsPath)
 	if err != nil {
 		return err
 	}
@@ -1628,9 +1730,11 @@ func dbCreate(cfg config.Config, mgr *dbpkg.Manager, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := st.EnsureCollection(ctx, meta.Collection, meta.Dims, meta.Quantization); err != nil {
+		_ = mgr.Remove(meta.Name)
 		return err
 	}
 	if err := st.EnsurePayloadIndexes(ctx, meta.Collection); err != nil {
+		_ = mgr.Remove(meta.Name)
 		return err
 	}
 
@@ -1709,7 +1813,7 @@ func dbRemove(cfg config.Config, mgr *dbpkg.Manager, args []string) error {
 	host, portStr, err := net.SplitHostPort(cfg.Qdrant.URL)
 	if err == nil {
 		if port, perr := strconv.Atoi(portStr); perr == nil {
-			if st, serr := qstore.New(host, port); serr == nil {
+			if st, serr := qstore.NewWithREST(host, port, cfg.Qdrant.RESTURL, cfg.Qdrant.SnapshotsPath); serr == nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				_ = st.DeleteCollection(ctx, meta.Collection)
 				cancel()
@@ -1740,6 +1844,7 @@ func cmdSearch(args []string) error {
 	minScore := fs.Float64("min-score", 0, "descarta resultados por debajo")
 	maxPerFile := fs.Int("max-per-file", 2, "máximo de pasajes por archivo")
 	rerankMode := fs.String("rerank", "auto", "auto|on|off")
+	mode := fs.String("mode", "", "dense|hybrid (default: search.hybrid)")
 	rerankDepth := fs.Int("rerank-depth", 0, "candidatos que pasan por el reranker (0 = pool)")
 	asJSON := fs.Bool("json", false, "salida JSON")
 	explain := fs.Bool("explain", false, "incluye tokens y posición del chunk")
@@ -1749,7 +1854,7 @@ func cmdSearch(args []string) error {
 	// type, and the stdlib parser stops at the first positional argument.
 	withValue := map[string]bool{
 		"-k": true, "--k": true, "--db": true, "--min-score": true,
-		"--max-per-file": true, "--rerank": true, "--rerank-depth": true,
+		"--max-per-file": true, "--rerank": true, "--rerank-depth": true, "--mode": true,
 	}
 	var flagArgs, positional []string
 	for i := 0; i < len(args); i++ {
@@ -1771,13 +1876,19 @@ func cmdSearch(args []string) error {
 		return fmt.Errorf("%w: search \"consulta\"", errUsage)
 	}
 	query := positional[0]
+	if *mode != "" && *mode != "dense" && *mode != "hybrid" {
+		return fmt.Errorf("%w: --mode %q no es dense|hybrid", errUsage, *mode)
+	}
 	cfg, _, err := loadConfig()
 	if err != nil {
 		return err
 	}
+	if *minScore > 0 && hybridEnabled(cfg, *mode) {
+		fmt.Fprintln(os.Stderr, "aviso: en modo híbrido el score es RRF (~0.0x), no es comparable con coseno; --min-score necesita calibración")
+	}
 	// Fast path: the resident service already has the models loaded.
 	if cfg.Service.URL != "" {
-		if done, err := searchViaService(cfg, *dbName, query, *k, *maxPerFile, *minScore, *rerankMode, *rerankDepth, *asJSON, *explain, filter.Map()); done {
+		if done, err := searchViaService(cfg, *dbName, query, *k, *maxPerFile, *minScore, *rerankMode, *mode, *rerankDepth, *asJSON, *explain, filter.Map()); done {
 			return err
 		}
 	}
@@ -1788,16 +1899,6 @@ func cmdSearch(args []string) error {
 	modelID := cfg.Defaults.Embedding
 	collection := cfg.Index.Collection
 	dims := cfg.Index.Dims
-	// Fast path: the resident service already has the models loaded.
-	if cfg.Service.URL != "" {
-		if done, err := searchViaService(cfg, *dbName, query, *k, *maxPerFile, *minScore, *rerankMode, *rerankDepth, *asJSON, *explain, filter.Map()); done {
-			return err
-		}
-	}
-	if *dbName == "all" {
-		return fmt.Errorf("search --db all requiere argosd corriendo (service.url)")
-	}
-
 	if *dbName != "" && *dbName != "all" {
 		mgr := dbpkg.New(filepath.Join(cfg.Paths.Home, "dbs"))
 		meta, err := mgr.Get(*dbName)
@@ -1830,7 +1931,7 @@ func cmdSearch(args []string) error {
 		TokenizerPath: filepath.Join(dir, "tokenizer.json"),
 		LibraryPath:   ortLib(cfg),
 		Name:          m.ID,
-		Dims:          dimsOrModel(dims, m.Specs.Dims),
+		Dims:          effectiveDims(m, dims),
 		MaxTokens:     m.Specs.MaxTokens,
 		Pooling:       m.Specs.Pooling,
 		QueryInstruct: m.QueryInstruction,
@@ -1852,7 +1953,7 @@ func cmdSearch(args []string) error {
 	if err != nil {
 		return err
 	}
-	st, err := qstore.New(host, port)
+	st, err := qstore.NewWithREST(host, port, cfg.Qdrant.RESTURL, cfg.Qdrant.SnapshotsPath)
 	if err != nil {
 		return err
 	}
@@ -1867,6 +1968,7 @@ func cmdSearch(args []string) error {
 		MinScore:    *minScore,
 		RerankDepth: *rerankDepth,
 		Filter:      filter.Map(),
+		Hybrid:      hybridEnabled(cfg, *mode),
 	}
 
 	useRerank := *rerankMode == "on"
@@ -1951,12 +2053,24 @@ func truncate(s string, n int) string {
 	return s[:n-1] + "…"
 }
 
+// hybridEnabled resolves the per-command override against the config.
+func hybridEnabled(cfg config.Config, mode string) bool {
+	switch mode {
+	case "dense":
+		return false
+	case "hybrid":
+		return true
+	default:
+		return cfg.Search.Hybrid
+	}
+}
+
 // searchViaService calls argosd. It returns done=false to fall back to the
 // local pipeline when the service is not running.
-func searchViaService(cfg config.Config, db, query string, k, maxPerFile int, minScore float64, rerank string, depth int, asJSON, explain bool, filter map[string]string) (bool, error) {
+func searchViaService(cfg config.Config, db, query string, k, maxPerFile int, minScore float64, rerank, mode string, depth int, asJSON, explain bool, filter map[string]string) (bool, error) {
 	payload, err := json.Marshal(map[string]any{
 		"query": query, "db": db, "k": k, "max_per_file": maxPerFile,
-		"min_score": minScore, "rerank": rerank, "rerank_depth": depth,
+		"min_score": minScore, "rerank": rerank, "mode": mode, "rerank_depth": depth,
 		"filter": filter,
 	})
 	if err != nil {
@@ -1983,9 +2097,12 @@ func searchViaService(cfg config.Config, db, query string, k, maxPerFile int, mi
 		return true, nil
 	}
 	var out struct {
-		Collection string `json:"collection"`
-		ElapsedMS  int64  `json:"elapsed_ms"`
+		Collection string   `json:"collection"`
+		Mode       string   `json:"mode"`
+		ElapsedMS  int64    `json:"elapsed_ms"`
+		Warnings   []string `json:"warnings"`
 		Hits       []struct {
+			DB         string  `json:"db"`
 			Path       string  `json:"path"`
 			Heading    string  `json:"heading"`
 			Score      float64 `json:"score"`
@@ -1996,21 +2113,35 @@ func searchViaService(cfg config.Config, db, query string, k, maxPerFile int, mi
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return false, nil
 	}
+	for _, w := range out.Warnings {
+		fmt.Fprintln(os.Stderr, "aviso:", w)
+	}
+	showDB := db == "all"
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	if explain {
-		fmt.Fprintln(w, "SCORE\tTOKENS\tCHUNK\tARCHIVO\tSECCIÓN")
-	} else {
-		fmt.Fprintln(w, "SCORE\tARCHIVO\tSECCIÓN")
+	switch {
+	case explain && showDB:
+		fmt.Fprintln(w, "SCORE	DB	TOKENS	CHUNK	ARCHIVO	SECCIÓN")
+	case explain:
+		fmt.Fprintln(w, "SCORE	TOKENS	CHUNK	ARCHIVO	SECCIÓN")
+	case showDB:
+		fmt.Fprintln(w, "SCORE	DB	ARCHIVO	SECCIÓN")
+	default:
+		fmt.Fprintln(w, "SCORE	ARCHIVO	SECCIÓN")
 	}
 	for _, h := range out.Hits {
-		if explain {
-			fmt.Fprintf(w, "%.3f\t%d\t%d\t%s\t%s\n", h.Score, h.Tokens, h.ChunkIndex, h.Path, truncate(h.Heading, 70))
-			continue
+		switch {
+		case explain && showDB:
+			fmt.Fprintf(w, "%.3f	%s	%d	%d	%s	%s\n", h.Score, h.DB, h.Tokens, h.ChunkIndex, h.Path, truncate(h.Heading, 70))
+		case explain:
+			fmt.Fprintf(w, "%.3f	%d	%d	%s	%s\n", h.Score, h.Tokens, h.ChunkIndex, h.Path, truncate(h.Heading, 70))
+		case showDB:
+			fmt.Fprintf(w, "%.3f	%s	%s	%s\n", h.Score, h.DB, h.Path, truncate(h.Heading, 70))
+		default:
+			fmt.Fprintf(w, "%.3f	%s	%s\n", h.Score, h.Path, truncate(h.Heading, 70))
 		}
-		fmt.Fprintf(w, "%.3f\t%s\t%s\n", h.Score, h.Path, truncate(h.Heading, 70))
 	}
 	w.Flush()
-	fmt.Printf("\n%d resultados en %d ms (%s, argosd)\n", len(out.Hits), out.ElapsedMS, out.Collection)
+	fmt.Printf("\n%d resultados en %d ms (%s, %s, argosd)\n", len(out.Hits), out.ElapsedMS, out.Collection, out.Mode)
 	return true, nil
 }
 
@@ -2127,7 +2258,7 @@ func cmdSnapshot(args []string) error {
 	if err != nil {
 		return err
 	}
-	st, err := qstore.New(host, port)
+	st, err := qstore.NewWithREST(host, port, cfg.Qdrant.RESTURL, cfg.Qdrant.SnapshotsPath)
 	if err != nil {
 		return err
 	}
@@ -2243,7 +2374,13 @@ func cmdCompletion(args []string) error {
 	case "bash":
 		fmt.Printf("_argosctl() { COMPREPLY=( $(compgen -W \"%s\" -- \"${COMP_WORDS[COMP_CWORD]}\") ); }\ncomplete -F _argosctl argosctl\n", commands)
 	case "zsh":
-		fmt.Printf("#compdef argosctl\n_arguments '1:comando:(%s)'\n", strings.ReplaceAll(commands, " ", " "))
+		fmt.Printf(`#compdef argosctl
+_arguments -C '1:comando:->cmd' '*::arg:->args'
+case $state in
+  cmd) _values 'comando' %s ;;
+  args) _files ;;
+esac
+`, commands)
 	case "fish":
 		for _, c := range strings.Fields(commands) {
 			fmt.Printf("complete -c argosctl -f -a %s\n", c)
@@ -2257,10 +2394,19 @@ func cmdCompletion(args []string) error {
 // --- db stats / docs / reindex ---------------------------------------------
 
 func dbStats(mgr *dbpkg.Manager, args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("%w: db stats <nombre>", errUsage)
+	var name string
+	asJSON := false
+	for _, a := range args {
+		if a == "--json" {
+			asJSON = true
+			continue
+		}
+		name = a
 	}
-	meta, err := mgr.Get(args[0])
+	if name == "" {
+		return fmt.Errorf("%w: db stats <nombre> [--json]", errUsage)
+	}
+	meta, err := mgr.Get(name)
 	if err != nil {
 		return err
 	}
@@ -2288,8 +2434,6 @@ func dbStats(mgr *dbpkg.Manager, args []string) error {
 		st.files++
 		st.chunks += len(f.Chunks)
 	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "TIPO\tARCHIVOS\tCHUNKS")
 	exts := make([]string, 0, len(byExt))
 	for ext := range byExt {
 		exts = append(exts, ext)
@@ -2298,19 +2442,45 @@ func dbStats(mgr *dbpkg.Manager, args []string) error {
 	totalFiles, totalChunks := 0, 0
 	for _, ext := range exts {
 		st := byExt[ext]
-		fmt.Fprintf(w, "%s\t%d\t%d\n", ext, st.files, st.chunks)
 		totalFiles += st.files
 		totalChunks += st.chunks
 	}
-	fmt.Fprintf(w, "total\t%d\t%d\n", totalFiles, totalChunks)
+	if asJSON {
+		byExtJSON := make(map[string]map[string]int, len(byExt))
+		for ext, st := range byExt {
+			byExtJSON[ext] = map[string]int{"files": st.files, "chunks": st.chunks}
+		}
+		out := map[string]any{
+			"db":     meta.Name,
+			"files":  totalFiles,
+			"chunks": totalChunks,
+			"by_ext": byExtJSON,
+		}
+		data, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "TIPO	ARCHIVOS	CHUNKS")
+	for _, ext := range exts {
+		st := byExt[ext]
+		fmt.Fprintf(w, "%s	%d	%d\n", ext, st.files, st.chunks)
+	}
+	fmt.Fprintf(w, "total	%d	%d\n", totalFiles, totalChunks)
 	return w.Flush()
 }
 
 func dbDocs(mgr *dbpkg.Manager, args []string) error {
 	var name string
 	offset, limit := 0, 50
+	asJSON := false
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--json":
+			asJSON = true
 		case "--offset":
 			if i+1 < len(args) {
 				i++
@@ -2326,7 +2496,7 @@ func dbDocs(mgr *dbpkg.Manager, args []string) error {
 		}
 	}
 	if name == "" {
-		return fmt.Errorf("%w: db docs <nombre> [--offset N] [--limit N]", errUsage)
+		return fmt.Errorf("%w: db docs <nombre> [--offset N] [--limit N] [--json]", errUsage)
 	}
 	meta, err := mgr.Get(name)
 	if err != nil {
@@ -2348,6 +2518,25 @@ func dbDocs(mgr *dbpkg.Manager, args []string) error {
 	end := offset + limit
 	if end > len(all) {
 		end = len(all)
+	}
+	if asJSON {
+		type doc struct {
+			Path   string `json:"path"`
+			Chunks int    `json:"chunks"`
+			Hash   string `json:"hash"`
+		}
+		docs := make([]doc, 0, end-offset)
+		for _, f := range all[offset:end] {
+			docs = append(docs, doc{Path: f.Rel, Chunks: len(f.Chunks), Hash: f.Hash})
+		}
+		out, err := json.MarshalIndent(map[string]any{
+			"db": meta.Name, "total": len(all), "offset": offset, "limit": limit, "documents": docs,
+		}, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "ARCHIVO\tCHUNKS\tHASH")
@@ -2393,10 +2582,7 @@ func dbReindex(cfg config.Config, mgr *dbpkg.Manager, args []string) error {
 	}
 	dims := meta.Dims
 	if model != meta.Model {
-		dims = m.Specs.Dims
-		if cfg.Index.Dims > 0 && cfg.Index.Dims <= m.Specs.Dims {
-			dims = cfg.Index.Dims
-		}
+		dims = effectiveDims(m, cfg.Index.Dims)
 	}
 	// New generation: a fresh base over the same source, so the old index
 	// stays searchable until the new one finishes.
@@ -2467,8 +2653,12 @@ func cmdEval(args []string) error {
 	k := fs.Int("k", 8, "profundidad de corte")
 	file := fs.String("file", "testdata/eval.yaml", "set de consultas")
 	rerank := fs.String("rerank", "off", "auto|on|off")
+	mode := fs.String("mode", "", "dense|hybrid (default: search.hybrid)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *mode != "" && *mode != "dense" && *mode != "hybrid" {
+		return fmt.Errorf("%w: --mode %q no es dense|hybrid", errUsage, *mode)
 	}
 	cfg, _, err := loadConfig()
 	if err != nil {
@@ -2493,7 +2683,10 @@ func cmdEval(args []string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "RESULTADO\tCONSULTA\tESPERADO")
 	for _, q := range set.Queries {
-		rank := rankOf(cfg, *dbName, q.Query, q.Path, *k, *rerank)
+		rank, err := rankOf(cfg, *dbName, q.Query, q.Path, *k, *rerank, *mode)
+		if err != nil {
+			return fmt.Errorf("eval %q: %w", q.Query, err)
+		}
 		hits++
 		if rank > 0 {
 			found++
@@ -2509,28 +2702,29 @@ func cmdEval(args []string) error {
 	return nil
 }
 
-func rankOf(cfg config.Config, db, query, wantPath string, k int, rerank string) int {
-	body, _ := json.Marshal(map[string]any{"query": query, "db": db, "k": k, "rerank": rerank, "max_per_file": 1})
+func rankOf(cfg config.Config, db, query, wantPath string, k int, rerank, mode string) (int, error) {
+	body, _ := json.Marshal(map[string]any{"query": query, "db": db, "k": k, "rerank": rerank, "mode": mode, "max_per_file": 1})
 	resp, err := http.Post(strings.TrimSuffix(cfg.Service.URL, "/")+"/v1/search", "application/json", strings.NewReader(string(body)))
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		return 0, fmt.Errorf("argosd: %s: %s", resp.Status, strings.TrimSpace(string(raw)))
 	}
 	var out struct {
 		Hits []struct {
 			Path string `json:"path"`
 		} `json:"hits"`
 	}
-	if json.NewDecoder(resp.Body).Decode(&out) != nil {
-		return 0
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return 0, err
 	}
 	for i, h := range out.Hits {
 		if strings.TrimPrefix(h.Path, "./") == strings.TrimPrefix(wantPath, "./") {
-			return i + 1
+			return i + 1, nil
 		}
 	}
-	return 0
+	return 0, nil
 }

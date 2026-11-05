@@ -151,10 +151,7 @@ func indexFile(
 	if err != nil {
 		return "", 0, 0, 0, err
 	}
-	if opts.Full {
-		prev, known = manifest.FileState{}, false
-	}
-	if known && prev.Hash == hash && prev.Model == opts.Model {
+	if !opts.Full && known && prev.Hash == hash && prev.Model == opts.Model {
 		return "skipped", 0, 0, 0, nil
 	}
 
@@ -194,11 +191,12 @@ func indexFile(
 		}
 	}
 
-	// Only chunks that do not exist yet need an embedding: unchanged content
-	// keeps its vector, which is the point of chunk-level diffing.
+	// A full reindex re-embeds everything but keeps the previous manifest for
+	// one reason: its ids are the only way to delete old chunks safely. The
+	// delete happens after the upsert (see below), never before.
 	var toEmbed []chunk.Chunk
 	for _, c := range chunksList {
-		if previous[c.ID] {
+		if previous[c.ID] && !opts.Full {
 			reused++
 			continue
 		}
@@ -207,14 +205,6 @@ func indexFile(
 
 	if opts.DryRun {
 		return actionFor(known), len(chunksList), len(toEmbed), reused, nil
-	}
-
-	// A full reindex must not leave points from a previous chunking behind:
-	// their ids may no longer exist in the new chunk set.
-	if opts.Full {
-		if err := store.DeleteByPayload(ctx, opts.Collection, "path", file.Rel); err != nil {
-			return "", 0, 0, 0, err
-		}
 	}
 
 	if len(toEmbed) > 0 {

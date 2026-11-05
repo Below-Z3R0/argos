@@ -63,8 +63,12 @@ type Prefixes struct {
 
 // Specs are the numbers a user needs to choose a model.
 type Specs struct {
-	Params        string `yaml:"params"`
-	Dims          int    `yaml:"dims"`
+	Params string `yaml:"params"`
+	Dims   int    `yaml:"dims"`
+	// DefaultDims is the size Argos uses when index.dims is not set. It is
+	// the native size for models without Matryoshka, and the tested
+	// truncation for models that support it.
+	DefaultDims   int    `yaml:"default_dims"`
 	MaxTokens     int    `yaml:"max_tokens"`
 	Pooling       string `yaml:"pooling"`
 	Quant         string `yaml:"quant"`
@@ -74,6 +78,15 @@ type Specs struct {
 	Languages     int    `yaml:"languages"`
 	Translation   bool   `yaml:"translation"`
 	MRL           bool   `yaml:"mrl"`
+}
+
+// EffectiveDims is the vector size a new collection should use when the user
+// did not override index.dims.
+func (m Model) EffectiveDims() int {
+	if m.Specs.DefaultDims > 0 {
+		return m.Specs.DefaultDims
+	}
+	return m.Specs.Dims
 }
 
 // File is one downloadable artifact.

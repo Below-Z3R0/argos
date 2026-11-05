@@ -56,7 +56,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("argosd: qdrant.url: %v", err)
 	}
-	store, err := qstore.New(host, port)
+	store, err := qstore.NewWithREST(host, port, cfg.Qdrant.RESTURL, cfg.Qdrant.SnapshotsPath)
 	if err != nil {
 		log.Fatalf("argosd: %v", err)
 	}

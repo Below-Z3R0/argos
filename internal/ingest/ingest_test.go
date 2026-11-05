@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,11 +21,15 @@ type fakeEmbedder struct {
 	dim   int
 	calls int
 	texts int
+	fail  bool
 }
 
 func (f *fakeEmbedder) Name() string { return "fake" }
 func (f *fakeEmbedder) Dim() int     { return f.dim }
 func (f *fakeEmbedder) EmbedPassages(_ context.Context, texts []string) ([][]float32, error) {
+	if f.fail {
+		return nil, errors.New("embedder down")
+	}
 	f.calls++
 	f.texts += len(texts)
 	out := make([][]float32, len(texts))
@@ -103,6 +108,35 @@ func splitter() chunk.Splitter {
 		MaxTokens: 60,
 		MinTokens: 0,
 		Namespace: uuid.NameSpaceURL,
+	}
+}
+
+// A full reindex used to delete by path before embedding. If the model failed,
+// the file lost every point. This locks the safe order: embed first, delete
+// only after the new vectors are stored.
+func TestFullReindexKeepsPointsWhenEmbeddingFails(t *testing.T) {
+	_, files, man := fixture(t)
+	store := newFakeStore()
+	first := &fakeEmbedder{dim: 4}
+	stats, err := Run(context.Background(), files, parse.DefaultRegistry(), splitter(), first, store, man, Options{Collection: "c", Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := len(store.points)
+	if before == 0 || before != stats.Embed {
+		t.Fatalf("first run stored %d points for %d chunks", before, stats.Embed)
+	}
+
+	broken := &fakeEmbedder{dim: 4, fail: true}
+	failed, err := Run(context.Background(), files, parse.DefaultRegistry(), splitter(), broken, store, man, Options{Collection: "c", Model: "m", Full: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(failed.Errors) == 0 {
+		t.Fatal("expected the embedding failure to be recorded per file")
+	}
+	if len(store.points) != before {
+		t.Fatalf("failed full reindex left %d points, want the previous %d", len(store.points), before)
 	}
 }
 

@@ -17,6 +17,7 @@ models:
     specs:
       params: "0.6B"
       dims: 1024
+      default_dims: 512
       max_tokens: 32768
       pooling: last_token
       quant: int8
@@ -46,6 +47,7 @@ models:
     specs:
       params: "300M"
       dims: 768
+      default_dims: 768
       max_tokens: 2048
       pooling: mean
       quant: q4
@@ -80,6 +82,7 @@ models:
     specs:
       params: "568M"
       dims: 1024
+      default_dims: 1024
       max_tokens: 8192
       pooling: cls
       quant: int8
@@ -107,6 +110,7 @@ models:
     specs:
       params: "278M"
       dims: 768
+      default_dims: 768
       max_tokens: 512
       pooling: mean
       quant: int8

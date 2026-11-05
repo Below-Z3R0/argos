@@ -42,7 +42,7 @@ func Register(s *mcp.Server, d Deps) {
 			raw, err := d.Daemon.Search(ctx, map[string]any{
 				"query": in.Query, "db": in.DB, "k": in.K,
 				"max_per_file": in.MaxPerFile, "min_score": in.MinScore,
-				"rerank": in.Rerank, "rerank_depth": in.RerankDepth,
+				"rerank": in.Rerank, "mode": in.Mode, "rerank_depth": in.RerankDepth,
 				"filter": in.Filter,
 			})
 			if err == nil {
@@ -65,6 +65,9 @@ func Register(s *mcp.Server, d Deps) {
 		}
 		if in.Rerank != "" {
 			args = append(args, "--rerank", in.Rerank)
+		}
+		if in.Mode != "" {
+			args = append(args, "--mode", in.Mode)
 		}
 		if in.RerankDepth > 0 {
 			args = append(args, "--rerank-depth", fmt.Sprint(in.RerankDepth))
@@ -226,6 +229,47 @@ func Register(s *mcp.Server, d Deps) {
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name:        "job_cancel",
+		Description: "Cancela un job en ejecución. Devuelve si el job existía y seguía corriendo.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in JobInput) (*mcp.CallToolResult, any, error) {
+		if !d.Jobs.Cancel(in.ID) {
+			return d.fail(fmt.Errorf("job %s no existe o ya terminó", in.ID)), nil, nil
+		}
+		return text(fmt.Sprintf("job %s cancelado", in.ID)), nil, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "eval",
+		Description: "Mide recall@k y MRR sobre un set de consultas. Corre como job; requiere argosd.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in EvalInput) (*mcp.CallToolResult, any, error) {
+		if err := d.writable(); err != nil {
+			return d.fail(err), nil, nil
+		}
+		args := []string{"eval"}
+		if in.File != "" {
+			args = append(args, "--file", in.File)
+		}
+		if in.DB != "" {
+			args = append(args, "--db", in.DB)
+		}
+		if in.K > 0 {
+			args = append(args, "--k", fmt.Sprint(in.K))
+		}
+		if in.Rerank != "" {
+			args = append(args, "--rerank", in.Rerank)
+		}
+		if in.Mode != "" {
+			args = append(args, "--mode", in.Mode)
+		}
+		job, err := d.Jobs.Start(ctx, args...)
+		if err != nil {
+			return d.fail(err), nil, nil
+		}
+		out, _ := json.MarshalIndent(job, "", "  ")
+		return text(string(out)), nil, nil
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name:        "models_catalog",
 		Description: "Lista el catálogo de modelos con specs, licencia y estado de instalación.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in CatalogInput) (*mcp.CallToolResult, any, error) {
@@ -327,12 +371,23 @@ type SearchInput struct {
 	MaxPerFile  int               `json:"max_per_file,omitempty" jsonschema:"máximo de pasajes por archivo"`
 	MinScore    float64           `json:"min_score,omitempty" jsonschema:"descarta resultados por debajo de este score"`
 	Rerank      string            `json:"rerank,omitempty" jsonschema:"auto|on|off"`
+	Mode        string            `json:"mode,omitempty" jsonschema:"dense|hybrid; vacío usa la config"`
 	RerankDepth int               `json:"rerank_depth,omitempty" jsonschema:"candidatos que pasan por el reranker"`
 	Filter      map[string]string `json:"filter,omitempty" jsonschema:"filtros de payload, por ejemplo {\"lang\":\"es\"}"`
 }
 
 type DBNameInput struct {
 	Name string `json:"name" jsonschema:"nombre de la base"`
+}
+
+// EvalInput drives the recall harness. A file only makes sense inside the
+// container, where testdata is mounted with the repo.
+type EvalInput struct {
+	DB     string `json:"db,omitempty" jsonschema:"base a evaluar"`
+	File   string `json:"file,omitempty" jsonschema:"set YAML de consultas (default testdata/eval.yaml)"`
+	K      int    `json:"k,omitempty" jsonschema:"profundidad de corte (default 8)"`
+	Rerank string `json:"rerank,omitempty" jsonschema:"auto|on|off"`
+	Mode   string `json:"mode,omitempty" jsonschema:"dense|hybrid; vacío usa la config"`
 }
 
 type DBCreateInput struct {

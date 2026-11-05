@@ -24,6 +24,7 @@ type Config struct {
 	Service   Service   `yaml:"service"`
 	Layout    Layout    `yaml:"layout"`
 	Index     Index     `yaml:"index"`
+	Search    Search    `yaml:"search"`
 	Resources Resources `yaml:"resources"`
 }
 
@@ -38,7 +39,11 @@ type Chunking struct {
 
 // Qdrant is the vector store endpoint.
 type Qdrant struct {
-	URL string `yaml:"url"` // host:port
+	URL     string `yaml:"url"` // host:port
+	RESTURL string `yaml:"rest_url"`
+	// SnapshotsPath is the directory inside the Qdrant container. Restoring
+	// by file:// needs the path Qdrant sees, not the host mount point.
+	SnapshotsPath string `yaml:"snapshots_path"`
 }
 
 // Service points at argosd. When reachable, the CLI uses it instead of loading
@@ -57,11 +62,19 @@ type Layout struct {
 // Index names the collection.
 type Index struct {
 	Collection string `yaml:"collection"`
-	// Dims truncates Matryoshka embeddings (0 = the model's own size).
-	// Changing it changes the vector space: it requires a new collection.
+	// Dims overrides the model's default vector size (0 = the model's
+	// default, see the catalogue). Changing it changes the vector space: it
+	// requires a new collection.
 	Dims int `yaml:"dims"`
 	// Quantization compresses stored vectors: none | int8.
 	Quantization string `yaml:"quantization"`
+}
+
+// Search controls retrieval. Dense-only is kept as a comparison and debugging
+// mode; hybrid is the default because sparse handles exact terms that the
+// embedding blurs.
+type Search struct {
+	Hybrid bool `yaml:"hybrid"`
 }
 
 // Filters decide what the indexer reads. The default is Markdown only: a vault
@@ -120,10 +133,11 @@ func Default() Config {
 			ExcludeDirs: []string{".git", ".obsidian", ".rag", ".trash", "node_modules", "venv", ".venv"},
 		},
 		Chunking:  Chunking{MaxTokens: 800, MinTokens: 500, Overlap: 120},
-		Qdrant:    Qdrant{URL: firstNonEmpty(envOr("ARGOS_QDRANT_URL"), "127.0.0.1:6334")},
+		Qdrant:    Qdrant{URL: firstNonEmpty(envOr("ARGOS_QDRANT_URL"), "127.0.0.1:6334"), SnapshotsPath: "/qdrant/snapshots"},
 		Service:   Service{URL: firstNonEmpty(os.Getenv("ARGOS_SERVICE_URL"), "http://127.0.0.1:7712")},
 		Layout:    Layout{URL: firstNonEmpty(os.Getenv("ARGOS_LAYOUT_URL"), "http://127.0.0.1:5001"), Mode: firstNonEmpty(os.Getenv("ARGOS_LAYOUT"), "auto")},
-		Index:     Index{Collection: "argos_vault", Dims: 512, Quantization: "int8"},
+		Index:     Index{Collection: "argos_vault", Dims: 0, Quantization: "int8"},
+		Search:    Search{Hybrid: true},
 		Resources: Resources{Mode: "auto", Devices: Devices{Embed: "auto", Rerank: "auto"}, Threads: 0, Batch: 1, PauseAtPct: 90},
 	}
 }
@@ -217,6 +231,9 @@ func (c Config) Validate() error {
 	}
 	if c.Index.Dims < 0 {
 		return fmt.Errorf("index.dims must be >= 0, got %d", c.Index.Dims)
+	}
+	if c.Index.Dims > 8192 {
+		return fmt.Errorf("index.dims is larger than any catalog model (%d)", c.Index.Dims)
 	}
 	for name, dev := range map[string]string{"embed": c.Resources.Devices.Embed, "rerank": c.Resources.Devices.Rerank} {
 		switch dev {

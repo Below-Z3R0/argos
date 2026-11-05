@@ -17,9 +17,11 @@ Referencia de cada tool MCP. Todas ejecutan `argosctl`; el JSON de `search` es e
 | `max_per_file` | int | 2 | Tope por archivo |
 | `min_score` | float | 0 | Descarta por debajo |
 | `rerank` | string | auto | `auto\|on\|off` |
+| `mode` | string | config | `dense\|hybrid` |
 | `rerank_depth` | int | pool | Candidatos que pasan por el reranker |
 
-Devuelve `{query, collection, elapsed_ms, hits:[{path, heading, text, score, tokens, chunk_index}]}`.
+Devuelve `{query, collection, model, mode, elapsed_ms, hits:[{db, path, heading, text, score, tokens, chunk_index}], warnings?}`.
+`warnings` aparece cuando el reranker estaba en `auto` y no se pudo cargar.
 
 ## db_list / db_info
 
@@ -45,9 +47,18 @@ Crea el directorio de la base, su manifiesto y la colección en Qdrant. Requiere
 
 `full` ignora el manifiesto y re-embebe; `path` limita a un archivo o carpeta.
 
-## job_status / job_list
+## job_status / job_list / job_cancel
 
 `job_status {id}` devuelve estado, salida y código de salida. `job_list` lista los últimos 20 jobs.
+`job_cancel {id}` corta un job en ejecución; el job termina con `canceled: true`.
+
+## eval
+
+```json
+{"db": "knowledge", "file": "testdata/eval.yaml", "k": 8, "mode": "hybrid"}
+```
+
+Arranca un job que mide recall@k y MRR contra `argosd`. Requiere escritura.
 
 ## models_catalog
 

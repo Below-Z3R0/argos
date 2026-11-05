@@ -47,6 +47,8 @@ argosctl models path
 argosctl db create <ruta> [--name N] [--model M]
 argosctl db list
 argosctl db info <N>
+argosctl db stats <N> [--json]
+argosctl db docs <N> [--offset N] [--limit N] [--json]
 argosctl db rm <N> --force
 ```
 
@@ -62,30 +64,30 @@ generación, archivos, puntos, tamaño en disco, última corrida y errores.
 ```
 argosctl index [--db NOMBRE] [--path P] [--full] [--dry-run] [--chunks]
                [--include .md,.pdf] [--exclude .png] [--exclude-dir .git]
-               [--device auto|cpu|gpu] [--threads N] [--ram-limit MB]
-               [--progress ...] [--json]
+               [--limit N] [--max-tokens N] [--min-tokens N] [--overlap N]
 ```
 
 - Incremental por defecto (hash + mtime); `--full` ignora el manifiesto.
 - `--path` indexa un archivo o directorio puntual con el mismo diff.
 - `--dry-run` informa altas, modificaciones y borrados sin tocar Qdrant.
-- Los overrides de `--device/--threads/--ram-limit` valen solo para esta corrida.
+- `--limit` acota la corrida a los primeros N archivos (pruebas).
 
 ### Búsqueda
 
 ```
 argosctl search "<q>" [--db NOMBRE] [-k 20] [--max-per-file 2]
                       [--rerank auto|on|off] [--rerank-depth N]
-                      [--min-score F] [--json]
+                      [--mode dense|hybrid] [--min-score F] [--json] [--explain]
 ```
 
 - `--db` elige la base; sin él usa la colección de la config.
 - `--rerank auto` usa el reranker si está instalado; `on` falla si falta; `off` solo vectorial.
 - `--rerank-depth 0` rerankea todo el pool (`k × 3`).
 - `--json` devuelve `{query, collection, elapsed_ms, hits}`.
-- La búsqueda es híbrida (dense + sparse + RRF). Los scores son de fusión (~0.016), así que
-  `--min-score` todavía no está calibrado.
-- `eval --file testdata/eval.yaml --db N` mide recall@k y MRR contra el set.
+- La búsqueda es híbrida por defecto (`search.hybrid: true`); `--mode dense` sirve para comparar y
+  depurar. Los scores híbridos son de fusión RRF (~0.016), así que `--min-score` todavía no está
+  calibrado; el CLI avisa cuando se combinan.
+- `eval --file testdata/eval.yaml --db N [--mode dense|hybrid]` mide recall@k y MRR contra el set.
 - `models list` separa `INSTALADO` (disco), `DEFAULT` y `MEMORIA` (consultado a `argosd`).
 - Si `service.url` responde, `search` va por `argosd` (modelos residentes, ~50 ms); si no, cae al
   pipeline local (carga el modelo, ~3 s).
@@ -94,22 +96,16 @@ Las bases son tablas independientes; se puede buscar en una o en varias.
 
 | Invocación | Alcance |
 |---|---|
-| `search "x"` | La base default (`search.default_db`) |
+| `search "x"` | La base default (`index.collection`) |
 | `search "x" --db learning` | Una sola tabla |
-| `search "x" --db learning,university` | Varias tablas explícitas |
-| `search "x" --db all` | Todas las bases |
-| `search "x" --db all --model qwen3-embed-0.6b` | Todas las que usan ese modelo |
-| `search "x" --db all --exclude-db borradores` | Todas menos una |
+| `search "x" --db all` | Todas las bases (requiere `argosd`) |
 
 Reglas:
 
-- El conjunto se resuelve por intersección: `--db` primero, después `--model` filtra, después
-  `--exclude-db` resta.
-- `--model` acepta el id de una entrada del catálogo o `all` (sin filtro).
-- Si el conjunto queda vacío, exit code 4 con el detalle de qué filtro lo vació.
-- La fusión es **por rango** (RRF), así que funciona aunque las bases usen modelos distintos: los
-  scores no se comparan, solo las posiciones.
-- `--explain` muestra base, sección, rango por rama (dense/sparse) y posición final.
+- `--db all` resuelve todas las bases y fusiona por rango (RRF); funciona con modelos distintos
+  porque compara posiciones, no scores.
+- Sin `argosd`, `--db all` devuelve error explícito; el pipeline local solo busca en una base.
+- `--explain` agrega tokens y posición del chunk a la tabla; el JSON ya trae `db` por hit.
 
 ### Recursos y entorno
 
@@ -132,21 +128,31 @@ argosctl paths                    [--json]
 - `resources set` escribe la config (no hace falta editar YAML a mano).
 - `doctor` verifica Qdrant, colecciones, modelo default instalado y con hash correcto, threads
   efectivos, RAM disponible y GPUs.
-- `status` consulta el servicio si está corriendo (`/v1/status`) y, si no, muestra el estado local.
+- `status` no existe como comando suelto: el estado del servicio se consulta con `service status`.
 
 ### Servicio
 
 ```
-argosctl serve [--addr 127.0.0.1:7700] [--mcp]
+argosctl service status           # modelos cargados, provider y /v1/status
+argosctl service load  [embed|rerank|all]
+argosctl service unload [embed|rerank|all]
 ```
+
+El daemon es el binario `argosd` (no un subcomando): `argosd --addr 127.0.0.1:7712`.
 
 ### Utilidades
 
 ```
 argosctl version
 argosctl completion bash|zsh|fish
-argosctl config path|list|get <k>|set <k> <v>
+argosctl config path|list|get <k>|set <k> <v>|reset <k>
 ```
+
+`config reset <clave>` borra la clave del YAML y vuelve al default del código. `config set index.dims auto`
+equivale a `reset index.dims`: el tamaño sale del catálogo (512 para Qwen3, 768 para e5, 1024 para bge-m3).
+
+Claves de despliegue: `qdrant.url` (gRPC), `qdrant.rest_url` (REST, default `http://<host>:6333`),
+`qdrant.snapshots_path` (ruta dentro del contenedor, default `/qdrant/snapshots`) y `search.hybrid`.
 
 ## Matriz de cobertura
 

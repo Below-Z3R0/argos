@@ -69,6 +69,37 @@ func TestListAndEviction(t *testing.T) {
 	}
 }
 
+func TestCancelRunningJob(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "slow")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nsleep 5\necho done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := New(runner.New(bin, 10*time.Second, 1<<20), 2)
+	job, err := m.Start(context.Background(), "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.Cancel(job.ID) {
+		t.Fatal("Cancel returned false for a running job")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, ok := m.Get(job.ID)
+		if ok && got.Done {
+			if !got.Canceled {
+				t.Fatalf("job finished without the canceled flag: %+v", got)
+			}
+			if m.Cancel(job.ID) {
+				t.Fatal("Cancel returned true for a finished job")
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("canceled job never finished")
+}
+
 func TestUnknownJob(t *testing.T) {
 	m := New(fakeRunner(t), 2)
 	if _, ok := m.Get("nope"); ok {

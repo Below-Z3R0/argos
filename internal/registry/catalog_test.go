@@ -92,6 +92,50 @@ func TestStoreDir(t *testing.T) {
 	}
 }
 
+func TestCatalogDefaultDims(t *testing.T) {
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]int{
+		"qwen3-embed-0.6b":    512,
+		"e5-base":             768,
+		"bge-m3":              1024,
+		"embeddinggemma-300m": 768,
+	}
+	for id, want := range cases {
+		m, err := c.Get(id)
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if got := m.EffectiveDims(); got != want {
+			t.Errorf("%s EffectiveDims() = %d, want %d", id, got, want)
+		}
+		if m.Specs.Dims != 0 && m.EffectiveDims() > m.Specs.Dims {
+			t.Errorf("%s default %d exceeds native %d", id, m.EffectiveDims(), m.Specs.Dims)
+		}
+	}
+}
+
+func TestEffectiveDims(t *testing.T) {
+	cases := []struct {
+		name string
+		m    Model
+		want int
+	}{
+		{"mrl default", Model{Specs: Specs{Dims: 1024, DefaultDims: 512, MRL: true}}, 512},
+		{"non-mrl default equals native", Model{Specs: Specs{Dims: 768, DefaultDims: 768}}, 768},
+		{"no default falls back to native", Model{Specs: Specs{Dims: 1024}}, 1024},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.m.EffectiveDims(); got != tc.want {
+				t.Fatalf("EffectiveDims() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMergeOnlyTakesPins(t *testing.T) {
 	base := Catalog{Models: []Model{{
 		ID: "m", Name: "Model", Task: TaskEmbedding, Tier: "balanced", Default: true,

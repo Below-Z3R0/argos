@@ -67,7 +67,14 @@ func (s *Server) search(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.engine.Search(ctx, req)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		switch {
+		case errors.Is(err, service.ErrInvalidRequest):
+			status = http.StatusBadRequest
+		case errors.Is(err, service.ErrModelUnavailable):
+			status = http.StatusServiceUnavailable
+		case errors.Is(err, service.ErrStoreUnavailable):
+			status = http.StatusBadGateway
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 			status = http.StatusGatewayTimeout
 		}
 		http.Error(w, err.Error(), status)

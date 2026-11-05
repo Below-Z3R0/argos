@@ -17,8 +17,10 @@ import (
 
 // Store is a thin, typed wrapper around the client.
 type Store struct {
-	client *qdrant.Client
-	host   string
+	client        *qdrant.Client
+	host          string
+	restURL       string
+	snapshotsPath string
 }
 
 // Point is the shared point type.
@@ -27,8 +29,16 @@ type Point = types.Point
 // Hit is the shared search result type.
 type Hit = types.Hit
 
-// New connects to a Qdrant instance over gRPC.
+// New connects to a Qdrant instance over gRPC with the conventional REST
+// endpoint (host:6333) and snapshot path (/qdrant/snapshots).
 func New(host string, port int) (*Store, error) {
+	return NewWithREST(host, port, "", "")
+}
+
+// NewWithREST connects and records the REST endpoint and the snapshot
+// directory as Qdrant sees it. Empty values keep the conventional defaults;
+// a remote or re-mapped Qdrant needs both to restore snapshots.
+func NewWithREST(host string, port int, restURL, snapshotsPath string) (*Store, error) {
 	if host == "" {
 		host = "127.0.0.1"
 	}
@@ -39,7 +49,15 @@ func New(host string, port int) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("qdrant: connect: %w", err)
 	}
-	return &Store{client: c, host: host}, nil
+	if snapshotsPath == "" {
+		snapshotsPath = "/qdrant/snapshots"
+	}
+	return &Store{
+		client:        c,
+		host:          host,
+		restURL:       strings.TrimSuffix(restURL, "/"),
+		snapshotsPath: strings.TrimSuffix(snapshotsPath, "/"),
+	}, nil
 }
 
 // Close releases the connection.
@@ -203,18 +221,20 @@ func (s *Store) SearchHybrid(ctx context.Context, collection string, dense []flo
 	if len(sparseIdx) == 0 {
 		return s.Search(ctx, collection, dense, limit, filter)
 	}
+	var flt *qdrant.Filter
+	if len(filter) > 0 {
+		flt = filterFor(filter)
+	}
 	req := &qdrant.QueryPoints{
 		CollectionName: collection,
 		Prefetch: []*qdrant.PrefetchQuery{
-			{Query: qdrant.NewQueryDense(dense), Using: ptr("dense"), Limit: ptr(uint64(limit))},
-			{Query: qdrant.NewQuerySparse(sparseIdx, sparseVal), Using: ptr("sparse"), Limit: ptr(uint64(limit))},
+			{Query: qdrant.NewQueryDense(dense), Using: ptr("dense"), Limit: ptr(uint64(limit)), Filter: flt},
+			{Query: qdrant.NewQuerySparse(sparseIdx, sparseVal), Using: ptr("sparse"), Limit: ptr(uint64(limit)), Filter: flt},
 		},
 		Query:       qdrant.NewQueryFusion(qdrant.Fusion_RRF),
 		Limit:       ptr(uint64(limit)),
 		WithPayload: qdrant.NewWithPayload(true),
-	}
-	if len(filter) > 0 {
-		req.Filter = filterFor(filter)
+		Filter:      flt,
 	}
 	res, err := s.client.Query(ctx, req)
 	if err != nil {
@@ -245,6 +265,20 @@ func (s *Store) DeleteByIDs(ctx context.Context, collection string, ids []string
 	if len(ids) == 0 {
 		return nil
 	}
+	// gRPC rejects oversized messages; 256 ids per call is well under the limit.
+	for start := 0; start < len(ids); start += 256 {
+		end := start + 256
+		if end > len(ids) {
+			end = len(ids)
+		}
+		if err := s.deleteIDs(ctx, collection, ids[start:end]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) deleteIDs(ctx context.Context, collection string, ids []string) error {
 	pointIDs := make([]*qdrant.PointId, len(ids))
 	for i, id := range ids {
 		pointIDs[i] = qdrant.NewID(id)
@@ -303,6 +337,15 @@ func payloadOf(in map[string]*qdrant.Value) map[string]any {
 			out[k] = kind.DoubleValue
 		case *qdrant.Value_BoolValue:
 			out[k] = kind.BoolValue
+		case *qdrant.Value_ListValue:
+			// Tags come back as a list; dropping them silently broke filters.
+			items := make([]any, 0, len(kind.ListValue.GetValues()))
+			for _, item := range kind.ListValue.GetValues() {
+				if item != nil && item.GetStringValue() != "" {
+					items = append(items, item.GetStringValue())
+				}
+			}
+			out[k] = items
 		}
 	}
 	return out

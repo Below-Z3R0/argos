@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -21,13 +22,19 @@ func (f *fakeEmbedder) EmbedQuery(context.Context, string) ([]float32, error) {
 func (f *fakeEmbedder) Dim() int         { return 2 }
 func (f *fakeEmbedder) Provider() string { return "CPU" }
 
-type fakeStore struct{ hits []types.Hit }
+type fakeStore struct {
+	hits        []types.Hit
+	searchCalls int
+	hybridCalls int
+}
 
 func (f *fakeStore) Search(context.Context, string, []float32, int, map[string]string) ([]types.Hit, error) {
+	f.searchCalls++
 	return f.hits, nil
 }
 
 func (f *fakeStore) SearchHybrid(context.Context, string, []float32, []uint32, []float32, int, map[string]string) ([]types.Hit, error) {
+	f.hybridCalls++
 	return f.hits, nil
 }
 
@@ -119,6 +126,57 @@ func TestRerankOnWithoutModelFails(t *testing.T) {
 	})
 	if _, err := e.Search(context.Background(), SearchRequest{Query: "q", Rerank: "on"}); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestSearchModeSelectsStorePath(t *testing.T) {
+	cfg := testConfig(t)
+	store := &fakeStore{hits: []types.Hit{hit("a.md", "x", 0.9, 1)}}
+	e := New(cfg, catalog(), store, Factories{
+		Embedder: func(registry.Model, int) (Embedder, error) { return &fakeEmbedder{}, nil },
+	})
+
+	if _, err := e.Search(context.Background(), SearchRequest{Query: "q", Mode: "dense", Rerank: "off"}); err != nil {
+		t.Fatal(err)
+	}
+	if store.searchCalls != 1 || store.hybridCalls != 0 {
+		t.Fatalf("dense: search=%d hybrid=%d", store.searchCalls, store.hybridCalls)
+	}
+
+	if _, err := e.Search(context.Background(), SearchRequest{Query: "q", Mode: "hybrid", Rerank: "off"}); err != nil {
+		t.Fatal(err)
+	}
+	if store.searchCalls != 1 || store.hybridCalls != 1 {
+		t.Fatalf("hybrid: search=%d hybrid=%d", store.searchCalls, store.hybridCalls)
+	}
+
+	if _, err := e.Search(context.Background(), SearchRequest{Query: "q", Mode: "bm25"}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("invalid mode error = %v, want ErrInvalidRequest", err)
+	}
+}
+
+func TestSearchEmbedsOncePerModelAcrossDBs(t *testing.T) {
+	cfg := testConfig(t)
+	src := t.TempDir()
+	mgr := dbpkg.New(filepath.Join(cfg.Paths.Home, "dbs"))
+	for _, name := range []string{"uno", "dos"} {
+		dir := filepath.Join(src, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mgr.Create(dbpkg.Meta{Name: name, Source: dir, Model: "embed", Dims: 2}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	emb := &fakeEmbedder{}
+	e := New(cfg, catalog(), &fakeStore{hits: []types.Hit{hit("a.md", "x", 0.9, 1)}}, Factories{
+		Embedder: func(registry.Model, int) (Embedder, error) { return emb, nil },
+	})
+	if _, err := e.Search(context.Background(), SearchRequest{Query: "q", DB: "all", Rerank: "off"}); err != nil {
+		t.Fatal(err)
+	}
+	if emb.calls != 1 {
+		t.Fatalf("query embedded %d times, want 1 for two bases sharing a model", emb.calls)
 	}
 }
 

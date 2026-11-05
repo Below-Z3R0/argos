@@ -8,6 +8,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -21,6 +22,13 @@ import (
 	"github.com/Below-Z3R0/argos/internal/registry"
 	"github.com/Below-Z3R0/argos/internal/sparse"
 	"github.com/Below-Z3R0/argos/internal/types"
+)
+
+// Errors the HTTP layer maps to status codes. Everything else is a 500.
+var (
+	ErrInvalidRequest   = errors.New("invalid request")
+	ErrModelUnavailable = errors.New("model unavailable")
+	ErrStoreUnavailable = errors.New("store unavailable")
 )
 
 // Embedder is the subset of the embedding model the engine uses.
@@ -57,6 +65,7 @@ type SearchRequest struct {
 	MaxPerFile  int               `json:"max_per_file,omitempty"`
 	MinScore    float64           `json:"min_score,omitempty"`
 	Rerank      string            `json:"rerank,omitempty"` // auto | on | off
+	Mode        string            `json:"mode,omitempty"`   // dense | hybrid (empty = config)
 	RerankDepth int               `json:"rerank_depth,omitempty"`
 	Filter      map[string]string `json:"filter,omitempty"`
 }
@@ -74,12 +83,14 @@ type Hit struct {
 
 // SearchResponse is the HTTP response.
 type SearchResponse struct {
-	Query      string `json:"query"`
-	DB         string `json:"db"`
-	Collection string `json:"collection"`
-	Model      string `json:"model"`
-	ElapsedMS  int64  `json:"elapsed_ms"`
-	Hits       []Hit  `json:"hits"`
+	Query      string   `json:"query"`
+	DB         string   `json:"db"`
+	Collection string   `json:"collection"`
+	Model      string   `json:"model"`
+	Mode       string   `json:"mode"`
+	ElapsedMS  int64    `json:"elapsed_ms"`
+	Hits       []Hit    `json:"hits"`
+	Warnings   []string `json:"warnings,omitempty"`
 }
 
 // Target is the resolved base for a request.
@@ -141,7 +152,7 @@ func (e *Engine) Resolve(name string) (Target, error) {
 		}
 		dims := e.cfg.Index.Dims
 		if dims == 0 {
-			dims = m.Specs.Dims
+			dims = m.EffectiveDims()
 		}
 		return Target{Name: "default", Collection: e.cfg.Index.Collection, ModelID: modelID, Dims: dims}, nil
 	}
@@ -172,6 +183,17 @@ func (e *Engine) Search(ctx context.Context, req SearchRequest) (SearchResponse,
 	if req.Rerank == "" {
 		req.Rerank = "auto"
 	}
+	switch req.Mode {
+	case "":
+		if !e.cfg.Search.Hybrid {
+			req.Mode = "dense"
+		} else {
+			req.Mode = "hybrid"
+		}
+	case "dense", "hybrid":
+	default:
+		return SearchResponse{}, fmt.Errorf("%w: search.mode %q no es dense|hybrid", ErrInvalidRequest, req.Mode)
+	}
 
 	pool := req.K * 3
 	targets := []Target{}
@@ -195,46 +217,35 @@ func (e *Engine) Search(ctx context.Context, req SearchRequest) (SearchResponse,
 	}
 
 	sv := sparse.Encode(req.Query)
-	type fused struct {
-		hit   Hit
-		score float64
-	}
-	merged := map[string]*fused{}
+	ranked := make([][]types.Hit, 0, len(targets))
+	queryVectors := map[string][]float32{}
 	for _, target := range targets {
 		emb, err := e.embedderFor(target)
 		if err != nil {
 			return SearchResponse{}, err
 		}
-		vec, err := emb.EmbedQuery(ctx, req.Query)
-		if err != nil {
-			return SearchResponse{}, err
-		}
-		hits, err := e.store.SearchHybrid(ctx, target.Collection, vec, sv.Indices, sv.Values, pool, req.Filter)
-		if err != nil {
-			return SearchResponse{}, err
-		}
-		for rank, h := range toHits(hits) {
-			h.DB = target.Name
-			key := h.DB + "|" + h.Path + "|" + fmt.Sprint(h.ChunkIndex)
-			contribution := 1.0 / float64(60+rank+1)
-			if cur, ok := merged[key]; ok {
-				cur.score += contribution
-				continue
+		vecKey := fmt.Sprintf("%s/%d", target.ModelID, target.Dims)
+		vec, ok := queryVectors[vecKey]
+		if !ok {
+			vec, err = emb.EmbedQuery(ctx, req.Query)
+			if err != nil {
+				return SearchResponse{}, fmt.Errorf("%w: %v", ErrModelUnavailable, err)
 			}
-			merged[key] = &fused{hit: h, score: contribution}
+			queryVectors[vecKey] = vec
 		}
+		var hits []types.Hit
+		if req.Mode == "dense" {
+			hits, err = e.store.Search(ctx, target.Collection, vec, pool, req.Filter)
+		} else {
+			hits, err = e.store.SearchHybrid(ctx, target.Collection, vec, sv.Indices, sv.Values, pool, req.Filter)
+		}
+		if err != nil {
+			return SearchResponse{}, fmt.Errorf("%w: %v", ErrStoreUnavailable, err)
+		}
+		ranked = append(ranked, hits)
 	}
-	results := make([]Hit, 0, len(merged))
-	keys := make([]string, 0, len(merged))
-	for k := range merged {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool { return merged[keys[i]].score > merged[keys[j]].score })
-	for _, k := range keys {
-		h := merged[k].hit
-		h.Score = merged[k].score
-		results = append(results, h)
-	}
+	results := fuseHits(targets, ranked)
+	var warnings []string
 
 	if req.Rerank != "off" {
 		rr, rerr := e.rerankerFor()
@@ -260,10 +271,14 @@ func (e *Engine) Search(ctx context.Context, req SearchRequest) (SearchResponse,
 					sort.SliceStable(results[:depth], func(i, j int) bool {
 						return results[i].Score > results[j].Score
 					})
+				} else if serr != nil {
+					warnings = append(warnings, "reranker: "+serr.Error())
 				}
 			}
 		} else if req.Rerank == "on" {
-			return SearchResponse{}, fmt.Errorf("reranker no disponible: %w", rerr)
+			return SearchResponse{}, fmt.Errorf("%w: reranker no disponible: %v", ErrModelUnavailable, rerr)
+		} else if rerr != nil {
+			warnings = append(warnings, "reranker no disponible: "+rerr.Error())
 		}
 	}
 
@@ -290,13 +305,51 @@ func (e *Engine) Search(ctx context.Context, req SearchRequest) (SearchResponse,
 	}
 	e.metrics.Inc("argos_search_total", metrics.Labels{"db": dbLabel, "model": modelLabel})
 	e.metrics.Add("argos_hits_total", float64(len(out)), nil)
-	resp := SearchResponse{Query: req.Query, ElapsedMS: time.Since(start).Milliseconds(), Hits: out}
+	resp := SearchResponse{Query: req.Query, Mode: req.Mode, ElapsedMS: time.Since(start).Milliseconds(), Hits: out, Warnings: warnings}
 	if len(targets) == 1 {
 		resp.DB, resp.Collection, resp.Model = targets[0].Name, targets[0].Collection, targets[0].ModelID
 	} else {
 		resp.DB, resp.Collection, resp.Model = "all", "all", "mixed"
 	}
 	return resp, nil
+}
+
+// fuseHits merges per-database rankings with reciprocal rank fusion. A chunk
+// that appears in two bases adds both contributions, which is intentional:
+// agreement between independent indexes is a stronger signal.
+func fuseHits(targets []Target, ranked [][]types.Hit) []Hit {
+	type fused struct {
+		hit   Hit
+		score float64
+	}
+	merged := map[string]*fused{}
+	for i, target := range targets {
+		if i >= len(ranked) {
+			break
+		}
+		for rank, h := range toHits(ranked[i]) {
+			h.DB = target.Name
+			key := h.DB + "|" + h.Path + "|" + fmt.Sprint(h.ChunkIndex)
+			contribution := 1.0 / float64(60+rank+1)
+			if cur, ok := merged[key]; ok {
+				cur.score += contribution
+				continue
+			}
+			merged[key] = &fused{hit: h, score: contribution}
+		}
+	}
+	keys := make([]string, 0, len(merged))
+	for k := range merged {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return merged[keys[i]].score > merged[keys[j]].score })
+	out := make([]Hit, 0, len(keys))
+	for _, k := range keys {
+		h := merged[k].hit
+		h.Score = merged[k].score
+		out = append(out, h)
+	}
+	return out
 }
 
 // Status describes what is loaded.
@@ -310,10 +363,10 @@ type Status struct {
 	Ready      bool          `json:"ready"`
 }
 
-// Status reports the live state.
+// Status reports the live state. The health probe runs after releasing the
+// lock: a slow Qdrant must not block a model load.
 func (e *Engine) Status(ctx context.Context) Status {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	st := Status{Collection: e.cfg.Index.Collection, Model: e.cfg.Defaults.Embedding}
 	for k, v := range e.embedders {
 		st.Embedders = append(st.Embedders, k)
@@ -322,11 +375,12 @@ func (e *Engine) Status(ctx context.Context) Status {
 	for k := range e.rerankers {
 		st.Rerankers = append(st.Rerankers, k)
 	}
-	sort.Strings(st.Embedders)
-	sort.Strings(st.Rerankers)
 	for _, state := range e.states {
 		st.Models = append(st.Models, *state)
 	}
+	e.mu.Unlock()
+	sort.Strings(st.Embedders)
+	sort.Strings(st.Rerankers)
 	sort.Slice(st.Models, func(i, j int) bool { return st.Models[i].Key < st.Models[j].Key })
 	st.Ready = e.store.Health(ctx) == nil
 	return st
@@ -427,7 +481,7 @@ func (e *Engine) defaultDims() int {
 		return e.cfg.Index.Dims
 	}
 	if m, err := e.catalog.Get(e.cfg.Defaults.Embedding); err == nil {
-		return m.Specs.Dims
+		return m.EffectiveDims()
 	}
 	return 0
 }
@@ -461,7 +515,10 @@ func (e *Engine) embedderFor(t Target) (Embedder, error) {
 	state.State = "error"
 	state.Error = err.Error()
 	e.metrics.Inc("argos_model_load_total", metrics.Labels{"model": t.ModelID, "state": "error"})
-	return nil, err
+	if err == nil {
+		err = fmt.Errorf("modelo %s sin fábrica", t.ModelID)
+	}
+	return nil, fmt.Errorf("%w: %v", ErrModelUnavailable, err)
 }
 
 func (e *Engine) rerankerFor() (Reranker, error) {
@@ -494,7 +551,10 @@ func (e *Engine) rerankerFor() (Reranker, error) {
 	state.State = "error"
 	state.Error = err.Error()
 	e.metrics.Inc("argos_model_load_total", metrics.Labels{"model": id, "state": "error"})
-	return nil, err
+	if err == nil {
+		err = fmt.Errorf("reranker %s sin fábrica", id)
+	}
+	return nil, fmt.Errorf("%w: %v", ErrModelUnavailable, err)
 }
 
 func toHits(in []types.Hit) []Hit {
