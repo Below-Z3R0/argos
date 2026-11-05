@@ -77,6 +77,36 @@ Usa el asset `onnxruntime-linux-x64-gpu_cuda12-1.31.0.tgz` y copia `libonnxrunti
 3. Copiar `libonnxruntime.so*` y `libonnxruntime_providers_migraphx.so`.
 4. Opcional: `--use_zendnn` para acelerar el CPU AMD (requiere ZenDNN/AOCL).
 
+## Distribución: build local (decisión actual)
+
+Por ahora **no hay registry**: cada usuario construye la imagen en su máquina desde el Dockerfile del
+repo. GHCR queda como opción futura.
+
+```sh
+make image-gpu     # unificada CPU+NVIDIA, ~8.7 GB, ~5 min con caché
+make image-cpu     # solo CPU, 416 MB, ~2 min
+```
+
+Requisitos y costos:
+
+| Variante | Disco libre | Tiempo (primera vez) | Rebuild tras cambiar Go |
+|---|---|---|---|
+| CPU | ~2 GB | 2–3 min | ~40 s (caché de capas) |
+| NVIDIA | ~15 GB | 5–8 min | ~1 min |
+| Intel | ~15 GB | 15–25 min (ORT desde fuente) | depende del cambio |
+| AMD | ~25 GB | ~45 min (ORT + ROCm) | depende del cambio |
+
+Docker cachea las capas: cambiar código Go no recompila ORT; cambiar el Dockerfile o la versión de
+ORT sí.
+
+El CLI del sistema se encarga de:
+
+1. `git -C ~/Documents/Github/argos pull`
+2. si cambió el commit o el Dockerfile → `make image-<variante>`
+3. `docker compose up -d` y verificación en `/readyz`
+
+Las imágenes de un registry no caducan: lo efímero es el runner que las construye.
+
 ## Verificación por imagen
 
 | Caso | Esperado |
