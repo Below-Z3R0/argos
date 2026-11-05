@@ -45,6 +45,9 @@ RUN go build -trimpath -ldflags "-s -w" -o /out/argosctl ./cmd/argosctl \
 # --- runtime: CPU (default) -------------------------------------------------
 FROM debian:13-slim AS runtime-cpu
 
+ARG GIT_SHA=dev
+LABEL org.opencontainers.image.revision=$GIT_SHA
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl poppler-utils tini libstdc++6 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
@@ -74,6 +77,9 @@ CMD ["argosd", "--addr", "0.0.0.0:7712"]
 # provider is only loaded when the device policy asks for it. Bundling the
 # CUDA runtime is what makes one image enough for CPU and NVIDIA.
 FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04 AS runtime-gpu
+
+ARG GIT_SHA=dev
+LABEL org.opencontainers.image.revision=$GIT_SHA
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl poppler-utils tini libstdc++6 libgomp1 passwd \
@@ -119,6 +125,9 @@ RUN ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
 
 FROM openvino/ubuntu24_runtime:2025.3.0 AS runtime-intel
 
+ARG GIT_SHA=dev
+LABEL org.opencontainers.image.revision=$GIT_SHA
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl poppler-utils tini libstdc++6 libgomp1 passwd \
     && rm -rf /var/lib/apt/lists/*
@@ -163,6 +172,9 @@ RUN ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
       --build_dir /build
 
 FROM rocm/dev-ubuntu-24.04:6.4 AS runtime-amd
+
+ARG GIT_SHA=dev
+LABEL org.opencontainers.image.revision=$GIT_SHA
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl poppler-utils tini libstdc++6 libgomp1 passwd \
