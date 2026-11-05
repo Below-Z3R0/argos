@@ -107,7 +107,7 @@ CMD ["argosd", "--addr", "0.0.0.0:7712"]
 # --- ONNX Runtime with OpenVINO (Intel CPU + iGPU) --------------------------
 # Experimental: this compiles ONNX Runtime from source. Takes ~20-30 min and
 # needs ~10 GB of build cache. The runtime image drops the toolchain.
-FROM openvino/ubuntu24_dev:2025.3.0 AS ort-intel
+FROM openvino/ubuntu24_dev:2026.4.1 AS ort-intel
 
 ARG ORT_VERSION=1.31.0
 USER root
@@ -120,13 +120,14 @@ RUN git clone --depth 1 --branch "v${ORT_VERSION}" --recurse-submodules \
 
 WORKDIR /ort
 RUN ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
-      --skip_submodule_sync --use_openvino CPU_FP32 \
-      --build_dir /build
+      --skip_submodule_sync --use_openvino CPU \
+      --allow_running_as_root --build_dir /build
 
-FROM openvino/ubuntu24_runtime:2025.3.0 AS runtime-intel
+FROM openvino/ubuntu24_runtime:2026.4.1 AS runtime-intel
 
 ARG GIT_SHA=dev
 LABEL org.opencontainers.image.revision=$GIT_SHA
+USER root
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl poppler-utils tini libstdc++6 libgomp1 passwd \
@@ -169,12 +170,13 @@ RUN git clone --depth 1 --branch "v${ORT_VERSION}" --recurse-submodules \
 WORKDIR /ort
 RUN ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
       --skip_submodule_sync --use_migraphx --migraphx_home /opt/rocm \
-      --build_dir /build
+      --allow_running_as_root --build_dir /build
 
 FROM rocm/dev-ubuntu-24.04:6.4 AS runtime-amd
 
 ARG GIT_SHA=dev
 LABEL org.opencontainers.image.revision=$GIT_SHA
+USER root
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl poppler-utils tini libstdc++6 libgomp1 passwd \
