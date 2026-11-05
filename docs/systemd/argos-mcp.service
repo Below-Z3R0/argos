@@ -1,0 +1,16 @@
+[Unit]
+Description=Argos MCP server
+After=network.target argosd.service
+Wants=argosd.service
+
+[Service]
+Type=simple
+ExecStart=%h/Documents/Github/argos-mcp/argos-mcp \
+  --argosctl %h/Documents/Github/argos/argosctl \
+  --argosd http://127.0.0.1:7712 \
+  --addr 127.0.0.1:7711
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

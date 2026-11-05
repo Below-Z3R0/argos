@@ -1,0 +1,6 @@
+/argosctl
+/argosd
+*.test
+*.out
+.env
+/argos-mcp

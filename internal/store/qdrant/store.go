@@ -1,0 +1,262 @@
+// Package qdrant is the only vector store Argos talks to. It is not hidden
+// behind a vendor interface on purpose: every method here is a Qdrant concept,
+// and an abstraction would only be a worse copy of this API.
+package qdrant
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	"github.com/qdrant/go-client/qdrant"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/Below-Z3R0/argos/internal/types"
+)
+
+// Store is a thin, typed wrapper around the client.
+type Store struct {
+	client *qdrant.Client
+	host   string
+}
+
+// Point is the shared point type.
+type Point = types.Point
+
+// Hit is the shared search result type.
+type Hit = types.Hit
+
+// New connects to a Qdrant instance over gRPC.
+func New(host string, port int) (*Store, error) {
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if port == 0 {
+		port = 6334
+	}
+	c, err := qdrant.NewClient(&qdrant.Config{Host: host, Port: port, SkipCompatibilityCheck: true})
+	if err != nil {
+		return nil, fmt.Errorf("qdrant: connect: %w", err)
+	}
+	return &Store{client: c, host: host}, nil
+}
+
+// Close releases the connection.
+func (s *Store) Close() error { return s.client.Close() }
+
+// EnsureCollection creates the collection when it does not exist and verifies
+// that an existing one uses the same dimension. Mixing dimensions in one
+// collection is not something Qdrant can recover from, so it fails loudly.
+func (s *Store) EnsureCollection(ctx context.Context, name string, dim int, quantization string) error {
+	info, err := s.client.GetCollectionsClient().Get(ctx, &qdrant.GetCollectionInfoRequest{CollectionName: name})
+	if err == nil {
+		size := int(info.GetResult().GetConfig().GetParams().GetVectorsConfig().GetParams().GetSize())
+		if size != 0 && size != dim {
+			return fmt.Errorf("qdrant: collection %s has %d dims, this index uses %d; use another collection (index.collection)", name, size, dim)
+		}
+		return nil
+	}
+	if status.Code(err) != codes.NotFound {
+		return fmt.Errorf("qdrant: collection %s: %w", name, err)
+	}
+
+	create := &qdrant.CreateCollection{
+		CollectionName: name,
+		VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
+			Size:     uint64(dim),
+			Distance: qdrant.Distance_Cosine,
+		}),
+	}
+	if quantization == "int8" {
+		create.QuantizationConfig = &qdrant.QuantizationConfig{
+			Quantization: &qdrant.QuantizationConfig_Scalar{Scalar: &qdrant.ScalarQuantization{
+				Type:      qdrant.QuantizationType_Int8,
+				Quantile:  ptr(float32(0.99)),
+				AlwaysRam: ptr(true),
+			}},
+		}
+	}
+	if err := s.client.CreateCollection(ctx, create); err != nil {
+		return fmt.Errorf("qdrant: create %s: %w", name, err)
+	}
+	return nil
+}
+
+// Health reports whether the server answers, regardless of collections.
+func (s *Store) Health(ctx context.Context) error {
+	_, err := s.client.CollectionExists(ctx, "__argos_health")
+	return err
+}
+
+// CollectionDim returns the vector size of an existing collection.
+func (s *Store) CollectionDim(ctx context.Context, name string) (int, error) {
+	info, err := s.client.GetCollectionsClient().Get(ctx, &qdrant.GetCollectionInfoRequest{CollectionName: name})
+	if err != nil {
+		return 0, err
+	}
+	return int(info.GetResult().GetConfig().GetParams().GetVectorsConfig().GetParams().GetSize()), nil
+}
+
+// EnsurePayloadIndexes creates the indexes the filter paths depend on.
+// Qdrant recommends creating them before uploading, not after.
+func (s *Store) EnsurePayloadIndexes(ctx context.Context, collection string) error {
+	fields := []struct {
+		name  string
+		ftype qdrant.FieldType
+	}{
+		{"path", qdrant.FieldType_FieldTypeKeyword},
+		{"file_hash", qdrant.FieldType_FieldTypeKeyword},
+		{"mtime", qdrant.FieldType_FieldTypeInteger},
+		{"tags", qdrant.FieldType_FieldTypeKeyword},
+		{"lang", qdrant.FieldType_FieldTypeKeyword},
+	}
+	for _, f := range fields {
+		_, err := s.client.CreateFieldIndex(ctx, &qdrant.CreateFieldIndexCollection{
+			CollectionName: collection,
+			FieldName:      f.name,
+			FieldType:      f.ftype.Enum(),
+			Wait:           ptr(true),
+		})
+		if err != nil && !strings.Contains(err.Error(), "already exists") {
+			return fmt.Errorf("qdrant: index %s on %s: %w", f.name, collection, err)
+		}
+	}
+	return nil
+}
+
+// Upsert writes points and waits for the change to be applied.
+func (s *Store) Upsert(ctx context.Context, collection string, points []Point) error {
+	return s.UpsertWithWait(ctx, collection, points, true)
+}
+
+// UpsertWithWait controls whether the write blocks until indexing finishes.
+// Bulk ingestion uses false and waits once at the end: wait=true is 3–5x slower
+// per batch.
+func (s *Store) UpsertWithWait(ctx context.Context, collection string, points []Point, wait bool) error {
+	if len(points) == 0 {
+		return nil
+	}
+	batch := make([]*qdrant.PointStruct, len(points))
+	for i, p := range points {
+		batch[i] = &qdrant.PointStruct{
+			Id:      qdrant.NewID(p.ID),
+			Vectors: qdrant.NewVectors(p.Vector...),
+			Payload: qdrant.NewValueMap(p.Payload),
+		}
+	}
+	_, err := s.client.Upsert(ctx, &qdrant.UpsertPoints{
+		CollectionName: collection,
+		Wait:           ptr(wait),
+		Points:         batch,
+	})
+	if err != nil {
+		return fmt.Errorf("qdrant: upsert into %s: %w", collection, err)
+	}
+	return nil
+}
+
+// Search returns the closest points to a vector.
+func (s *Store) Search(ctx context.Context, collection string, vector []float32, limit int, filter map[string]string) ([]Hit, error) {
+	req := &qdrant.QueryPoints{
+		CollectionName: collection,
+		Query:          qdrant.NewQuery(vector...),
+		Limit:          ptr(uint64(limit)),
+		WithPayload:    qdrant.NewWithPayload(true),
+	}
+	if len(filter) > 0 {
+		req.Filter = filterFor(filter)
+	}
+	res, err := s.client.Query(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("qdrant: search %s: %w", collection, err)
+	}
+	out := make([]Hit, 0, len(res))
+	for _, p := range res {
+		out = append(out, Hit{ID: p.GetId().GetUuid(), Score: p.GetScore(), Payload: payloadOf(p.GetPayload())})
+	}
+	return out, nil
+}
+
+// DeleteByPayload removes every point whose field matches the value.
+func (s *Store) DeleteByPayload(ctx context.Context, collection, field, value string) error {
+	_, err := s.client.Delete(ctx, &qdrant.DeletePoints{
+		CollectionName: collection,
+		Wait:           ptr(true),
+		Points:         qdrant.NewPointsSelectorFilter(filterFor(map[string]string{field: value})),
+	})
+	if err != nil {
+		return fmt.Errorf("qdrant: delete from %s: %w", collection, err)
+	}
+	return nil
+}
+
+// DeleteByIDs removes specific points, used when chunk content changes.
+func (s *Store) DeleteByIDs(ctx context.Context, collection string, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	pointIDs := make([]*qdrant.PointId, len(ids))
+	for i, id := range ids {
+		pointIDs[i] = qdrant.NewID(id)
+	}
+	_, err := s.client.Delete(ctx, &qdrant.DeletePoints{
+		CollectionName: collection,
+		Wait:           ptr(true),
+		Points:         qdrant.NewPointsSelectorIDs(pointIDs),
+	})
+	if err != nil {
+		return fmt.Errorf("qdrant: delete ids from %s: %w", collection, err)
+	}
+	return nil
+}
+
+// Count returns the number of points matching the filter.
+func (s *Store) Count(ctx context.Context, collection string, filter map[string]string) (uint64, error) {
+	req := &qdrant.CountPoints{CollectionName: collection, Exact: ptr(true)}
+	if len(filter) > 0 {
+		req.Filter = filterFor(filter)
+	}
+	n, err := s.client.Count(ctx, req)
+	if err != nil {
+		return 0, fmt.Errorf("qdrant: count %s: %w", collection, err)
+	}
+	return n, nil
+}
+
+// DeleteCollection drops a collection and everything in it.
+func (s *Store) DeleteCollection(ctx context.Context, name string) error {
+	return s.client.DeleteCollection(ctx, name)
+}
+
+func filterFor(fields map[string]string) *qdrant.Filter {
+	must := make([]*qdrant.Condition, 0, len(fields))
+	for k, v := range fields {
+		must = append(must, qdrant.NewMatch(k, v))
+	}
+	return &qdrant.Filter{Must: must}
+}
+
+// payloadOf keeps the payload types: a token count is an integer, not a
+// string, and losing that forces the caller to re-parse everything.
+func payloadOf(in map[string]*qdrant.Value) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		if v == nil {
+			continue
+		}
+		switch kind := v.Kind.(type) {
+		case *qdrant.Value_StringValue:
+			out[k] = kind.StringValue
+		case *qdrant.Value_IntegerValue:
+			out[k] = kind.IntegerValue
+		case *qdrant.Value_DoubleValue:
+			out[k] = kind.DoubleValue
+		case *qdrant.Value_BoolValue:
+			out[k] = kind.BoolValue
+		}
+	}
+	return out
+}
+
+func ptr[T any](v T) *T { return &v }

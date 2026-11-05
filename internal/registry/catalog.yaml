@@ -1,0 +1,177 @@
+# Catálogo de modelos de embeddings de Argos.
+# Fuente de verdad: este archivo (se embebe con go:embed en el binario).
+# Los sha256 se completan con `argosctl models sync`, que resuelve cada URL,
+# descarga, calcula el hash y reescribe este archivo.
+version: 1
+updated: "2026-11-05"
+
+models:
+  - id: qwen3-embed-0.6b
+    name: Qwen3-Embedding 0.6B
+    task: embedding
+    tier: balanced
+    default: true
+    family: qwen3
+    license: Apache-2.0
+    homepage: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
+    specs:
+      params: "0.6B"
+      dims: 1024
+      max_tokens: 32768
+      pooling: last_token
+      quant: int8
+      mrl: true
+      ram_mb: 1600
+      disk_mb: 596
+    query_instruction: "Given a web search query, retrieve relevant passages that answer the query"
+    files:
+      - url: https://huggingface.co/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main/onnx/model_int8.onnx
+        dest: model.onnx
+        size_mb: 585
+        sha256: "6d0ea863f78b4a84afa3c7fcba1ec341572b5e28121aef77b7092b1dfdf679c7"
+      - url: https://huggingface.co/onnx-community/Qwen3-Embedding-0.6B-ONNX/resolve/main/tokenizer.json
+        dest: tokenizer.json
+        size_mb: 11
+        sha256: "def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a"
+    notes: "Default: mejor calidad. 716 ms por chunk en CPU (medido, salidas KV podadas); el indexado completo es nocturno."
+
+  - id: embeddinggemma-300m
+    name: EmbeddingGemma 300M (q4)
+    task: embedding
+    tier: fast
+    default: false
+    family: gemma
+    license: Gemma
+    homepage: https://huggingface.co/google/embeddinggemma-300m
+    specs:
+      params: "300M"
+      dims: 768
+      max_tokens: 2048
+      pooling: mean
+      quant: q4
+      ram_mb: 380
+      disk_mb: 208
+    prefixes:
+      query: "task: search result | query: "
+      passage: "title: none | text: "
+    files:
+      - url: https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX/resolve/main/onnx/model_q4.onnx
+        dest: model.onnx
+        size_mb: 1
+        sha256: ""
+      - url: https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX/resolve/main/onnx/model_q4.onnx_data
+        dest: model.onnx_data
+        size_mb: 188
+        sha256: ""
+      - url: https://huggingface.co/onnx-community/embeddinggemma-300m-ONNX/resolve/main/tokenizer.json
+        dest: tokenizer.json
+        size_mb: 19
+        sha256: ""
+    notes: "El doble de throughput que un 0.6B. Licencia Gemma: revisar términos antes de uso comercial."
+
+  - id: bge-m3
+    name: BGE-M3
+    task: embedding
+    tier: compat
+    default: false
+    family: bge
+    license: MIT
+    homepage: https://huggingface.co/BAAI/bge-m3
+    specs:
+      params: "568M"
+      dims: 1024
+      max_tokens: 8192
+      pooling: cls
+      quant: int8
+      ram_mb: 750
+      disk_mb: 559
+    files:
+      - url: https://huggingface.co/onnx-community/bge-m3-ONNX/resolve/main/onnx/model_int8.onnx
+        dest: model.onnx
+        size_mb: 542
+        sha256: ""
+      - url: https://huggingface.co/onnx-community/bge-m3-ONNX/resolve/main/tokenizer.json
+        dest: tokenizer.json
+        size_mb: 16
+        sha256: ""
+    notes: "Respaldo si la exportación de Qwen3 no carga. Encoder XLM-R clásico, muy probado."
+
+  - id: e5-base
+    name: multilingual-e5-base
+    task: embedding
+    tier: fast
+    default: false
+    family: e5
+    license: MIT
+    homepage: https://huggingface.co/intfloat/multilingual-e5-base
+    specs:
+      params: "278M"
+      dims: 768
+      max_tokens: 512
+      pooling: mean
+      quant: int8
+      ram_mb: 800
+      disk_mb: 282
+    prefixes:
+      query: "query: "
+      passage: "passage: "
+    files:
+      - url: https://huggingface.co/Xenova/multilingual-e5-base/resolve/main/onnx/model_int8.onnx
+        dest: model.onnx
+        size_mb: 265
+        sha256: "9ddfd8b45086dabc59a7e1bb00463225dace8954962418b240840f2153bc87da"
+      - url: https://huggingface.co/Xenova/multilingual-e5-base/resolve/main/tokenizer.json
+        dest: tokenizer.json
+        size_mb: 16
+        sha256: "62c24cdc13d4c9952d63718d6c9fa4c287974249e16b7ade6d5a85e7bbb75626"
+    notes: "Opción rápida: 128 ms por chunk de 512 tokens (9× menos que Qwen3), algo menos de calidad."
+
+  - id: bge-reranker-v2-m3-int8
+    name: BGE Reranker v2 M3 (int8)
+    task: reranker
+    tier: balanced
+    default: true
+    family: bge
+    license: MIT
+    homepage: https://huggingface.co/BAAI/bge-reranker-v2-m3
+    specs:
+      params: "568M"
+      max_tokens: 8192
+      quant: int8
+      ram_mb: 800
+      disk_mb: 560
+    files:
+      - url: https://huggingface.co/onnx-community/bge-reranker-v2-m3-ONNX/resolve/main/onnx/model_int8.onnx
+        dest: model.onnx
+        size_mb: 544
+        sha256: "912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d"
+      - url: https://huggingface.co/onnx-community/bge-reranker-v2-m3-ONNX/resolve/main/tokenizer.json
+        dest: tokenizer.json
+        size_mb: 16
+        sha256: "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3"
+    notes: "Default. MIT, multilingüe, ~71.5 BEIR. Sin restricción comercial."
+
+  - id: qwen3-reranker-0.6b-q4
+    name: Qwen3-Reranker 0.6B (q4)
+    task: reranker
+    tier: quality
+    default: false
+    family: qwen3
+    license: Apache-2.0
+    homepage: https://huggingface.co/Qwen/Qwen3-Reranker-0.6B
+    specs:
+      params: "0.6B"
+      max_tokens: 8192
+      quant: q4
+      ram_mb: 1300
+      disk_mb: 960
+    files:
+      - url: https://huggingface.co/onnx-community/Qwen3-Reranker-0.6B-ONNX/resolve/main/onnx/model_q4.onnx
+        dest: model.onnx
+        size_mb: 949
+        sha256: ""
+      - url: https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/tokenizer.json
+        dest: tokenizer.json
+        size_mb: 11
+        sha256: ""
+    notes: "Mejor calidad y licencia Apache-2.0, pero pide 949 MB: solo con 16 GB o GPU."

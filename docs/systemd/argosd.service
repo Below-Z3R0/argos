@@ -1,0 +1,15 @@
+[Unit]
+Description=Argos search service (models resident)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart=%h/Documents/Github/argos/argosd --addr 127.0.0.1:7712
+Restart=on-failure
+RestartSec=3
+# Optional: point to a GPU-enabled ONNX Runtime build.
+# Environment=ARGOS_ORT_LIB=%h/.local/share/argos/runtime/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so
+
+[Install]
+WantedBy=default.target
