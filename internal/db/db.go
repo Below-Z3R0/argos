@@ -80,7 +80,13 @@ func (m *Manager) List() ([]Meta, error) {
 
 // Create registers a base. If the name is taken, a short random suffix is
 // appended and the final name is returned.
-func (m *Manager) Create(meta Meta) (Meta, error) {
+func (m *Manager) Create(meta Meta) (Meta, error) { return m.create(meta, false) }
+
+// CreateGeneration registers a new generation over the same source, which is
+// exactly what a model change needs: the old base stays searchable.
+func (m *Manager) CreateGeneration(meta Meta) (Meta, error) { return m.create(meta, true) }
+
+func (m *Manager) create(meta Meta, allowSameSource bool) (Meta, error) {
 	if meta.Source == "" {
 		return Meta{}, fmt.Errorf("db: source is required")
 	}
@@ -94,6 +100,9 @@ func (m *Manager) Create(meta Meta) (Meta, error) {
 	// embeddings and makes search return duplicates.
 	existing, _ := m.List()
 	for _, other := range existing {
+		if allowSameSource && other.Source == meta.Source {
+			continue // generation of the same corpus
+		}
 		if within(meta.Source, other.Source) || within(other.Source, meta.Source) {
 			return Meta{}, fmt.Errorf("db: %s se superpone con la base %s (%s)", meta.Source, other.Name, other.Source)
 		}

@@ -95,6 +95,8 @@ func run(args []string) error {
 		return cmdService(args[1:])
 	case "snapshot":
 		return cmdSnapshot(args[1:])
+	case "completion":
+		return cmdCompletion(args[1:])
 	case "doctor":
 		return cmdDoctor(args[1:])
 	default:
@@ -119,6 +121,7 @@ Comandos:
   search      busca en una base (con reranker opcional)
   service     estado y carga/descarga de modelos en argosd (status|load|unload)
   snapshot    crea, lista, borra o restaura snapshots de una base
+  completion  script de autocompletado (bash|zsh|fish)
   doctor      verifica entorno, rutas y modelos
   version     versión del binario
 `)
@@ -1142,6 +1145,23 @@ func cmdIndex(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *dbName == "all" {
+		mgr := dbpkg.New(filepath.Join(cfg.Paths.Home, "dbs"))
+		list, err := mgr.List()
+		if err != nil {
+			return err
+		}
+		if len(list) == 0 {
+			return fmt.Errorf("no hay bases registradas")
+		}
+		for _, meta := range list {
+			fmt.Printf("\n== %s ==\n", meta.Name)
+			if err := cmdIndex(rewriteDBArg(args, meta.Name)); err != nil {
+				return fmt.Errorf("%s: %w", meta.Name, err)
+			}
+		}
+		return nil
+	}
 	manifestPath := ""
 	if *dbName != "" {
 		mgr := dbpkg.New(filepath.Join(cfg.Paths.Home, "dbs"))
@@ -1524,6 +1544,12 @@ func cmdDB(args []string) error {
 		return dbList(mgr)
 	case "info":
 		return dbInfo(mgr, args[1:])
+	case "stats":
+		return dbStats(mgr, args[1:])
+	case "docs":
+		return dbDocs(mgr, args[1:])
+	case "reindex":
+		return dbReindex(cfg, mgr, args[1:])
 	case "rm":
 		return dbRemove(cfg, mgr, args[1:])
 	default:
@@ -2195,4 +2221,220 @@ func containsString(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// --- completion -------------------------------------------------------------
+
+func cmdCompletion(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("%w: completion bash|zsh|fish", errUsage)
+	}
+	commands := "help init paths models config index search db service snapshot doctor version completion"
+	switch args[0] {
+	case "bash":
+		fmt.Printf("_argosctl() { COMPREPLY=( $(compgen -W \"%s\" -- \"${COMP_WORDS[COMP_CWORD]}\") ); }\ncomplete -F _argosctl argosctl\n", commands)
+	case "zsh":
+		fmt.Printf("#compdef argosctl\n_arguments '1:comando:(%s)'\n", strings.ReplaceAll(commands, " ", " "))
+	case "fish":
+		for _, c := range strings.Fields(commands) {
+			fmt.Printf("complete -c argosctl -f -a %s\n", c)
+		}
+	default:
+		return fmt.Errorf("%w: shell %q", errUsage, args[0])
+	}
+	return nil
+}
+
+// --- db stats / docs / reindex ---------------------------------------------
+
+func dbStats(mgr *dbpkg.Manager, args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("%w: db stats <nombre>", errUsage)
+	}
+	meta, err := mgr.Get(args[0])
+	if err != nil {
+		return err
+	}
+	man, err := manifest.Open(mgr.ManifestPath(meta.Name))
+	if err != nil {
+		return err
+	}
+	defer man.Close()
+	all, err := man.All()
+	if err != nil {
+		return err
+	}
+	type stat struct{ files, chunks int }
+	byExt := map[string]*stat{}
+	for _, f := range all {
+		ext := filepath.Ext(f.Rel)
+		if ext == "" {
+			ext = "(sin extensión)"
+		}
+		st := byExt[ext]
+		if st == nil {
+			st = &stat{}
+			byExt[ext] = st
+		}
+		st.files++
+		st.chunks += len(f.Chunks)
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "TIPO\tARCHIVOS\tCHUNKS")
+	exts := make([]string, 0, len(byExt))
+	for ext := range byExt {
+		exts = append(exts, ext)
+	}
+	sort.Strings(exts)
+	totalFiles, totalChunks := 0, 0
+	for _, ext := range exts {
+		st := byExt[ext]
+		fmt.Fprintf(w, "%s\t%d\t%d\n", ext, st.files, st.chunks)
+		totalFiles += st.files
+		totalChunks += st.chunks
+	}
+	fmt.Fprintf(w, "total\t%d\t%d\n", totalFiles, totalChunks)
+	return w.Flush()
+}
+
+func dbDocs(mgr *dbpkg.Manager, args []string) error {
+	var name string
+	offset, limit := 0, 50
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--offset":
+			if i+1 < len(args) {
+				i++
+				offset, _ = strconv.Atoi(args[i])
+			}
+		case "--limit":
+			if i+1 < len(args) {
+				i++
+				limit, _ = strconv.Atoi(args[i])
+			}
+		default:
+			name = args[i]
+		}
+	}
+	if name == "" {
+		return fmt.Errorf("%w: db docs <nombre> [--offset N] [--limit N]", errUsage)
+	}
+	meta, err := mgr.Get(name)
+	if err != nil {
+		return err
+	}
+	man, err := manifest.Open(mgr.ManifestPath(meta.Name))
+	if err != nil {
+		return err
+	}
+	defer man.Close()
+	all, err := man.All()
+	if err != nil {
+		return err
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].Rel < all[j].Rel })
+	if offset > len(all) {
+		offset = len(all)
+	}
+	end := offset + limit
+	if end > len(all) {
+		end = len(all)
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "ARCHIVO\tCHUNKS\tHASH")
+	for _, f := range all[offset:end] {
+		fmt.Fprintf(w, "%s\t%d\t%s\n", f.Rel, len(f.Chunks), firstN(f.Hash, 10))
+	}
+	w.Flush()
+	fmt.Printf("\n%d de %d documentos\n", end-offset, len(all))
+	return nil
+}
+
+func dbReindex(cfg config.Config, mgr *dbpkg.Manager, args []string) error {
+	var name, newModel string
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--new-model":
+			if i+1 < len(args) {
+				i++
+				newModel = args[i]
+			}
+		default:
+			name = args[i]
+		}
+	}
+	if name == "" {
+		return fmt.Errorf("%w: db reindex <nombre> [--new-model M]", errUsage)
+	}
+	meta, err := mgr.Get(name)
+	if err != nil {
+		return err
+	}
+	model := meta.Model
+	if newModel != "" {
+		model = newModel
+	}
+	cat, err := openCatalog()
+	if err != nil {
+		return err
+	}
+	m, err := cat.Get(model)
+	if err != nil {
+		return err
+	}
+	dims := meta.Dims
+	if model != meta.Model {
+		dims = m.Specs.Dims
+		if cfg.Index.Dims > 0 && cfg.Index.Dims <= m.Specs.Dims {
+			dims = cfg.Index.Dims
+		}
+	}
+	// New generation: a fresh base over the same source, so the old index
+	// stays searchable until the new one finishes.
+	baseName := name + "-v2"
+	for i := 3; i < 100; i++ {
+		if _, err := mgr.Get(baseName); err != nil {
+			break
+		}
+		baseName = fmt.Sprintf("%s-v%d", name, i)
+	}
+	fresh, err := mgr.CreateGeneration(dbpkg.Meta{
+		Name:         baseName,
+		Source:       meta.Source,
+		Collection:   "argos_" + baseName,
+		Model:        model,
+		Dims:         dims,
+		Quantization: meta.Quantization,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("nueva generación: %s (%s, %d dims, colección %s)\n", fresh.Name, fresh.Model, fresh.Dims, fresh.Collection)
+	fmt.Printf("siguiente paso: argosctl index --db %s\n", fresh.Name)
+	return nil
+}
+
+func firstN(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
+// rewriteDBArg replaces the value of --db so a recursive call indexes one base.
+func rewriteDBArg(args []string, name string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--db" || a == "-db":
+			out = append(out, a, name)
+			i++
+		case strings.HasPrefix(a, "--db=") || strings.HasPrefix(a, "-db="):
+			out = append(out, a[:strings.IndexByte(a, '=')+1]+name)
+		default:
+			out = append(out, a)
+		}
+	}
+	return out
 }

@@ -154,8 +154,8 @@ argosctl config path|list|get <k>|set <k> <v>
 | Nombre por defecto = carpeta, colisión con sufijo | `db create` | cubierto |
 | Elegir modelo al crear | `db create --model` | cubierto |
 | Ver todas las bases | `db list` | cubierto |
-| Ver tamaño y contenido de una base | `db info`, `db stats` | **agregado** |
-| Listar documentos/chunks (plugin) | `db docs` | **agregado** |
+| Ver tamaño y contenido de una base | `db info`, `db stats` | implementado |
+| Listar documentos/chunks (plugin) | `db docs` | implementado |
 | Borrar base | `db rm` | cubierto |
 | Reindexar todo o parte | `index --full`, `index --path` | cubierto |
 | Solo archivos nuevos | diff automático | cubierto |
@@ -164,7 +164,7 @@ argosctl config path|list|get <k>|set <k> <v>
 | Instalar / quitar modelo | `models install/remove` | cubierto |
 | Buscar en una base (single table) | `search --db N` | cubierto |
 | Buscar en varias tablas | `search --db a,b` | cubierto |
-| Buscar en todas | `search --db all` | cubierto |
+| Buscar en todas | `search --db all` | pendiente (bloque híbrido/cross-DB) |
 | Buscar solo las bases de un modelo | `search --model ID` | **agregado** |
 | Excluir una base de la búsqueda | `--exclude-db` | **agregado** |
 | Reordenar por relevancia real | `--rerank auto` (default) | **agregado** |
@@ -180,7 +180,7 @@ argosctl config path|list|get <k>|set <k> <v>
 | Ver/crear las rutas del stack | `paths`, `init` | **agregado** |
 | Limitar CPU/RAM del contenedor | `resources set --cpus/--memory` | **agregado** |
 | Editar config sin YAML | `config set`, `resources set` | **agregado** |
-| Autocompletado en fish | `completion fish` | **agregado** |
+| Autocompletado en fish | `completion fish` | implementado |
 | Ver qué archivos entrarían | `index --dry-run` | **agregado** |
 | Contar chunks con el tokenizer real | `index --dry-run --chunks` | **agregado** |
 | Incluir/excluir tipos de archivo | `--include/--exclude` + `config set filters.*` | **agregado** |

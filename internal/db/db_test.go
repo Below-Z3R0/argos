@@ -109,3 +109,21 @@ func TestRejectsNestedSources(t *testing.T) {
 		t.Fatal("expected an overlap error")
 	}
 }
+
+func TestGenerationAllowsSameSource(t *testing.T) {
+	m := manager(t)
+	src := source(t, "vault")
+	if _, err := m.Create(Meta{Name: "v1", Source: src, Model: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	gen, err := m.CreateGeneration(Meta{Name: "v2", Source: src, Model: "b"})
+	if err != nil {
+		t.Fatalf("generation rejected: %v", err)
+	}
+	if gen.Name != "v2" {
+		t.Fatalf("name %q", gen.Name)
+	}
+	if _, err := m.Create(Meta{Name: "dup", Source: src}); err == nil {
+		t.Fatal("plain Create should still reject a duplicate source")
+	}
+}

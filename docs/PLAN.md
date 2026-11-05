@@ -409,7 +409,7 @@ walk → filtro → hash → diff → parse → chunk → embed (lote) → spars
   Qdrant; sin ellos cada filtro y cada borrado hace scan.
 - Escrituras en lote con `wait=false` y una espera final: `wait=true` por lote es 3–5× más lento.
 - Commit por archivo, no por corrida: una interrupción no pierde el progreso.
-- Journal `dbs/<name>/journal/<run>.jsonl` para reanudar.
+- **Reanudación por manifiesto**: se confirma un archivo a la vez; una corrida interrumpida retoma desde el último archivo registrado (no hay journal aparte).
 - Backpressure: canal acotado entre parse y embed.
 - `index --path P` indexa solo ese archivo o directorio (mismo diff, filtrado por prefijo).
 - `--dry-run` informa qué haría sin tocar Qdrant.
@@ -457,7 +457,7 @@ walk → filtro → hash → diff → parse → chunk → embed (lote) → spars
 
 ### Fase 4 — Ingesta (3 días)
 17. `internal/manifest` (bbolt por base).
-18. Diff + journal + commit por archivo.
+18. Diff + commit por archivo.
 19. Lotes, reintentos, `--dry-run`, `--path`.
 20. Guardián de RAM y backpressure; test con embedder lento simulado.
 21. Progreso TTY/JSON; test de contadores.
@@ -523,7 +523,7 @@ El estado **no vive dentro del corpus**: va en un directorio reservado, configur
 
 ```
 ${ARGOS_HOME:-~/.local/share/argos}/
-├── data/       manifiesto, journal, config runtime
+├── data/       manifiesto y config runtime
 ├── models/     embeddings/ y rerankers/
 └── qdrant/     storage de Qdrant
 ```
