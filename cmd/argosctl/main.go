@@ -37,6 +37,7 @@ import (
 	"github.com/Below-Z3R0/argos/internal/rerank"
 	"github.com/Below-Z3R0/argos/internal/resources"
 	"github.com/Below-Z3R0/argos/internal/search"
+	"github.com/Below-Z3R0/argos/internal/service"
 	qstore "github.com/Below-Z3R0/argos/internal/store/qdrant"
 	"github.com/Below-Z3R0/argos/internal/vault"
 	"github.com/Below-Z3R0/argos/internal/version"
@@ -1871,7 +1872,9 @@ func orNone(v string) string {
 func cmdSearch(args []string) error {
 	fs := flag.NewFlagSet("search", flag.ContinueOnError)
 	k := fs.Int("k", 20, "pasajes a devolver")
-	dbName := fs.String("db", "", "base a consultar")
+	dbName := fs.String("db", "", "base a consultar (nombre, a,b, o all)")
+	modelFilter := fs.String("model", "", "filtra bases por modelo")
+	excludeDB := fs.String("exclude-db", "", "bases a excluir (coma)")
 	minScore := fs.Float64("min-score", 0, "descarta resultados por debajo")
 	maxPerFile := fs.Int("max-per-file", 2, "máximo de pasajes por archivo")
 	rerankMode := fs.String("rerank", "auto", "auto|on|off")
@@ -1886,6 +1889,7 @@ func cmdSearch(args []string) error {
 	withValue := map[string]bool{
 		"-k": true, "--k": true, "--db": true, "--min-score": true,
 		"--max-per-file": true, "--rerank": true, "--rerank-depth": true, "--mode": true,
+		"--model": true, "--exclude-db": true,
 	}
 	var flagArgs, positional []string
 	for i := 0; i < len(args); i++ {
@@ -1919,12 +1923,13 @@ func cmdSearch(args []string) error {
 	}
 	// Fast path: the resident service already has the models loaded.
 	if cfg.Service.URL != "" {
-		if done, err := searchViaService(cfg, *dbName, query, *k, *maxPerFile, *minScore, *rerankMode, *mode, *rerankDepth, *asJSON, *explain, filter.Map()); done {
+		if done, err := searchViaService(cfg, *dbName, *modelFilter, *excludeDB, query, *k, *maxPerFile, *minScore, *rerankMode, *mode, *rerankDepth, *asJSON, *explain, filter.Map()); done {
 			return err
 		}
 	}
-	if *dbName == "all" {
-		return fmt.Errorf("search --db all requiere argosd corriendo (service.url)")
+	multi := *dbName == "all" || strings.Contains(*dbName, ",") || *modelFilter != "" || *excludeDB != ""
+	if multi {
+		return localEngineSearch(cfg, *dbName, *modelFilter, *excludeDB, query, *k, *maxPerFile, *minScore, *rerankMode, *mode, *rerankDepth, *asJSON, *explain, filter.Map())
 	}
 
 	modelID := cfg.Defaults.Embedding
@@ -2027,6 +2032,8 @@ func cmdSearch(args []string) error {
 				Device:        cfg.Resources.Devices.Rerank,
 				GPUIndex:      -1,
 				Threads:       cfg.Resources.Threads,
+				Format:        rm.RerankFormat,
+				Instruction:   rm.QueryInstruction,
 			})
 			if err != nil {
 				return err
@@ -2096,11 +2103,130 @@ func hybridEnabled(cfg config.Config, mode string) bool {
 	}
 }
 
+// localEngineSearch runs the multi-base selector without argosd. It uses the
+// same engine as the daemon, so fusion and filters cannot drift between the
+// two paths.
+func localEngineSearch(cfg config.Config, db, modelFilter, excludeDB, query string, k, maxPerFile int, minScore float64, rerankMode, mode string, depth int, asJSON, explain bool, filter map[string]string) error {
+	cat, err := openCatalog()
+	if err != nil {
+		return err
+	}
+	host, portStr, err := net.SplitHostPort(cfg.Qdrant.URL)
+	if err != nil {
+		return fmt.Errorf("qdrant.url debe ser host:puerto: %w", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return err
+	}
+	st, err := qstore.NewWithREST(host, port, cfg.Qdrant.RESTURL, cfg.Qdrant.SnapshotsPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	modelStore := models.New(filepath.Join(cfg.Paths.Home, "models"))
+	lib := ortLib(cfg)
+	factories := service.Factories{
+		Embedder: func(m registry.Model, dims int) (service.Embedder, error) {
+			dir, err := modelStore.Dir(m.Task, m.ID)
+			if err != nil {
+				return nil, err
+			}
+			if _, ok := modelStore.Status(m.Task, m.ID); !ok {
+				return nil, fmt.Errorf("%s no está instalado (argosctl models install %s)", m.ID, m.ID)
+			}
+			return embed.NewORT(embed.ORTOptions{
+				ModelPath:     filepath.Join(dir, "model.onnx"),
+				TokenizerPath: filepath.Join(dir, "tokenizer.json"),
+				LibraryPath:   lib,
+				Name:          m.ID,
+				Dims:          dims,
+				MaxTokens:     m.Specs.MaxTokens,
+				Pooling:       m.Specs.Pooling,
+				QueryInstruct: m.QueryInstruction,
+				Prefixes:      m.Prefixes,
+				Threads:       cfg.Resources.Threads,
+				BatchSize:     cfg.Resources.Batch,
+				Device:        cfg.Resources.Devices.Embed,
+				GPUIndex:      -1,
+			})
+		},
+		Reranker: func(m registry.Model) (service.Reranker, error) {
+			dir, err := modelStore.Dir(m.Task, m.ID)
+			if err != nil {
+				return nil, err
+			}
+			if _, ok := modelStore.Status(m.Task, m.ID); !ok {
+				return nil, fmt.Errorf("%s no está instalado (argosctl models install %s)", m.ID, m.ID)
+			}
+			return rerank.New(rerank.Options{
+				ModelPath:     filepath.Join(dir, "model.onnx"),
+				TokenizerPath: filepath.Join(dir, "tokenizer.json"),
+				LibraryPath:   lib,
+				Device:        cfg.Resources.Devices.Rerank,
+				GPUIndex:      -1,
+				Threads:       cfg.Resources.Threads,
+				Format:        m.RerankFormat,
+				Instruction:   m.QueryInstruction,
+			})
+		},
+	}
+	eng := service.New(cfg, cat, st, factories)
+	defer eng.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	resp, err := eng.Search(ctx, service.SearchRequest{
+		Query: query, DB: db, Model: modelFilter, ExcludeDBs: splitList(excludeDB),
+		K: k, MaxPerFile: maxPerFile, MinScore: minScore,
+		Rerank: rerankMode, Mode: mode, RerankDepth: depth, Filter: filter,
+	})
+	if err != nil {
+		return err
+	}
+	if asJSON {
+		data, err := json.MarshalIndent(resp, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+	showDB := resp.DB == "all"
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	switch {
+	case explain && showDB:
+		fmt.Fprintln(w, "SCORE\tDB\tTOKENS\tCHUNK\tARCHIVO\tSECCIÓN")
+	case explain:
+		fmt.Fprintln(w, "SCORE\tTOKENS\tCHUNK\tARCHIVO\tSECCIÓN")
+	case showDB:
+		fmt.Fprintln(w, "SCORE\tDB\tARCHIVO\tSECCIÓN")
+	default:
+		fmt.Fprintln(w, "SCORE\tARCHIVO\tSECCIÓN")
+	}
+	for _, h := range resp.Hits {
+		switch {
+		case explain && showDB:
+			fmt.Fprintf(w, "%.3f\t%s\t%d\t%d\t%s\t%s\n", h.Score, h.DB, h.Tokens, h.ChunkIndex, h.Path, truncate(h.Heading, 70))
+		case explain:
+			fmt.Fprintf(w, "%.3f\t%d\t%d\t%s\t%s\n", h.Score, h.Tokens, h.ChunkIndex, h.Path, truncate(h.Heading, 70))
+		case showDB:
+			fmt.Fprintf(w, "%.3f\t%s\t%s\t%s\n", h.Score, h.DB, h.Path, truncate(h.Heading, 70))
+		default:
+			fmt.Fprintf(w, "%.3f\t%s\t%s\n", h.Score, h.Path, truncate(h.Heading, 70))
+		}
+	}
+	w.Flush()
+	fmt.Printf("\n%d resultados en %d ms (%s, %s)\n", len(resp.Hits), resp.ElapsedMS, resp.Collection, resp.Mode)
+	return nil
+}
+
 // searchViaService calls argosd. It returns done=false to fall back to the
 // local pipeline when the service is not running.
-func searchViaService(cfg config.Config, db, query string, k, maxPerFile int, minScore float64, rerank, mode string, depth int, asJSON, explain bool, filter map[string]string) (bool, error) {
+func searchViaService(cfg config.Config, db, modelFilter, excludeDB, query string, k, maxPerFile int, minScore float64, rerank, mode string, depth int, asJSON, explain bool, filter map[string]string) (bool, error) {
 	payload, err := json.Marshal(map[string]any{
-		"query": query, "db": db, "k": k, "max_per_file": maxPerFile,
+		"query": query, "db": db, "model": modelFilter, "exclude_dbs": splitList(excludeDB),
+		"k": k, "max_per_file": maxPerFile,
 		"min_score": minScore, "rerank": rerank, "mode": mode, "rerank_depth": depth,
 		"filter": filter,
 	})

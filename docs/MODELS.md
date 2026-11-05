@@ -115,11 +115,12 @@ los segundos, y el default de cada task es independiente.
 | id | Params | RAM | Disco | Licencia |
 |---|---|---|---|---|
 | `bge-reranker-v2-m3-int8` * | 568M | 800 MB | 560 MB | MIT |
-| `qwen3-reranker-0.6b-q4` | 0.6B | 1.3 GB | 960 MB | Apache-2.0 |
+| `qwen3-reranker-0.6b` | 0.6B | 1.6 GB | 1.2 GB | Apache-2.0 |
 
 El default es **BGE v2-M3**: MIT, multilingüe, ~71.5 BEIR y 560 MB. Se descartó jina v2 (mejor peso) por
-su licencia CC-BY-NC, que bloquea cualquier uso comercial. Qwen3-Reranker queda como alternativa
-Apache si se prioriza calidad sobre RAM.
+su licencia CC-BY-NC, que bloquea cualquier uso comercial. `qwen3-reranker-0.6b` es la alternativa
+Apache: export seq-cls, un logit y sigmoid, sin los 151k logits del CausalLM original. Pide 1.2 GB,
+así que no es default en una máquina de 8 GB.
 
 **Elegir el reranker por CLI** — tres formas, ninguna ambigua:
 
@@ -133,7 +134,7 @@ argosctl models list --task reranker          # ver los instalados
 Y para una consulta puntual, sin cambiar el default:
 
 ```sh
-argosctl search "qdrant" --rerank-model qwen3-reranker-0.6b-q4 --rerank-depth 60
+argosctl search "qdrant" --rerank on --rerank-depth 60
 ```
 
 El `id` identifica la tarea porque el catálogo tiene `task` por entrada; `--task` existe para filtrar

@@ -75,7 +75,8 @@ argosctl index [--db NOMBRE] [--path P] [--full] [--dry-run] [--chunks]
 ### Búsqueda
 
 ```
-argosctl search "<q>" [--db NOMBRE] [-k 20] [--max-per-file 2]
+argosctl search "<q>" [--db NOMBRE|a,b|all] [--model M] [--exclude-db N]
+                      [-k 20] [--max-per-file 2]
                       [--rerank auto|on|off] [--rerank-depth N]
                       [--mode dense|hybrid] [--min-score F] [--json] [--explain]
 ```
@@ -98,13 +99,18 @@ Las bases son tablas independientes; se puede buscar en una o en varias.
 |---|---|
 | `search "x"` | La base default (`index.collection`) |
 | `search "x" --db learning` | Una sola tabla |
-| `search "x" --db all` | Todas las bases (requiere `argosd`) |
+| `search "x" --db learning,university` | Varias tablas explícitas |
+| `search "x" --db all --model qwen3-embed-0.6b` | Todas las que usan ese modelo |
+| `search "x" --db all --exclude-db borradores` | Todas menos una |
 
 Reglas:
 
 - `--db all` resuelve todas las bases y fusiona por rango (RRF); funciona con modelos distintos
   porque compara posiciones, no scores.
-- Sin `argosd`, `--db all` devuelve error explícito; el pipeline local solo busca en una base.
+- `--db all` funciona sin `argosd`; el CLI carga los modelos y usa el mismo engine. Es más lento
+  que el servicio, pero no requiere daemon.
+- `--db a,b` y `--model`/`--exclude-db` se resuelven con el mismo selector en CLI y servicio.
+- Si el selector queda vacío, el comando devuelve error con el detalle.
 - `--explain` agrega tokens y posición del chunk a la tabla; el JSON ya trae `db` por hit.
 
 ### Recursos y entorno

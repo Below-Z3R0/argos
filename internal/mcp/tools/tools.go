@@ -212,7 +212,7 @@ func Register(s *mcp.Server, d Deps) {
 		Name:        "job_status",
 		Description: "Consulta un job de indexación por id: estado, salida y código de salida.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in JobInput) (*mcp.CallToolResult, any, error) {
-		job, ok := d.Jobs.Get(in.ID)
+		job, ok := d.Jobs.GetWindow(in.ID, in.Offset, in.Limit)
 		if !ok {
 			return d.fail(fmt.Errorf("job %s no existe", in.ID)), nil, nil
 		}
@@ -419,7 +419,9 @@ type DBRmInput struct {
 }
 
 type JobInput struct {
-	ID string `json:"id" jsonschema:"id del job"`
+	ID     string `json:"id" jsonschema:"id del job"`
+	Offset int    `json:"offset,omitempty" jsonschema:"offset en bytes para paginar la salida"`
+	Limit  int    `json:"limit,omitempty" jsonschema:"bytes a devolver (default 16 KiB)"`
 }
 
 type CatalogInput struct {

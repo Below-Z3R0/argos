@@ -49,10 +49,13 @@ type Model struct {
 	Homepage string `yaml:"homepage"`
 	Notes    string `yaml:"notes"`
 
-	QueryInstruction string   `yaml:"query_instruction"`
-	Prefixes         Prefixes `yaml:"prefixes"`
-	Specs            Specs    `yaml:"specs"`
-	Files            []File   `yaml:"files"`
+	QueryInstruction string `yaml:"query_instruction"`
+	// RerankFormat selects the input template: empty/xlmr is the BGE pair,
+	// qwen3 is the ChatML prompt used by the sequence-classification export.
+	RerankFormat string   `yaml:"rerank_format"`
+	Prefixes     Prefixes `yaml:"prefixes"`
+	Specs        Specs    `yaml:"specs"`
+	Files        []File   `yaml:"files"`
 }
 
 // Prefixes are the asymmetric prefixes some families require (E5, Gemma).

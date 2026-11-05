@@ -61,6 +61,9 @@ type Factories struct {
 type SearchRequest struct {
 	Query       string            `json:"query"`
 	DB          string            `json:"db,omitempty"`
+	DBs         []string          `json:"dbs,omitempty"`
+	Model       string            `json:"model,omitempty"`
+	ExcludeDBs  []string          `json:"exclude_dbs,omitempty"`
 	K           int               `json:"k,omitempty"`
 	MaxPerFile  int               `json:"max_per_file,omitempty"`
 	MinScore    float64           `json:"min_score,omitempty"`
@@ -163,6 +166,67 @@ func (e *Engine) Resolve(name string) (Target, error) {
 	return Target{Name: meta.Name, Collection: meta.Collection, ModelID: meta.Model, Dims: meta.Dims}, nil
 }
 
+// targets resolves the selector: one base, a comma list, all bases, and the
+// optional model/exclude filters. A plain DB keeps the historical behavior.
+func (e *Engine) targets(req SearchRequest) ([]Target, error) {
+	selectAll := req.DB == "all"
+	names := make([]string, 0)
+	if req.DB != "" && req.DB != "all" {
+		for _, n := range strings.Split(req.DB, ",") {
+			if n = strings.TrimSpace(n); n != "" {
+				names = append(names, n)
+			}
+		}
+	}
+	names = append(names, req.DBs...)
+	if !selectAll && len(names) == 0 && req.Model == "" && len(req.ExcludeDBs) == 0 {
+		target, err := e.Resolve("")
+		if err != nil {
+			return nil, err
+		}
+		return []Target{target}, nil
+	}
+	if len(names) == 1 && !selectAll && req.Model == "" && len(req.ExcludeDBs) == 0 {
+		target, err := e.Resolve(names[0])
+		if err != nil {
+			return nil, err
+		}
+		return []Target{target}, nil
+	}
+	list, err := e.dbs.List()
+	if err != nil {
+		return nil, err
+	}
+	if len(list) == 0 {
+		return nil, fmt.Errorf("no hay bases registradas")
+	}
+	wanted := map[string]bool{}
+	for _, n := range names {
+		wanted[n] = true
+	}
+	excluded := map[string]bool{}
+	for _, n := range req.ExcludeDBs {
+		excluded[strings.TrimSpace(n)] = true
+	}
+	targets := make([]Target, 0, len(list))
+	for _, meta := range list {
+		if len(wanted) > 0 && !wanted[meta.Name] {
+			continue
+		}
+		if req.Model != "" && req.Model != "all" && meta.Model != req.Model {
+			continue
+		}
+		if excluded[meta.Name] {
+			continue
+		}
+		targets = append(targets, Target{Name: meta.Name, Collection: meta.Collection, ModelID: meta.Model, Dims: meta.Dims})
+	}
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("%w: ningún target coincide con el selector", ErrInvalidRequest)
+	}
+	return targets, nil
+}
+
 // Search runs a query against a base.
 func (e *Engine) Search(ctx context.Context, req SearchRequest) (SearchResponse, error) {
 	e.use.RLock()
@@ -196,24 +260,9 @@ func (e *Engine) Search(ctx context.Context, req SearchRequest) (SearchResponse,
 	}
 
 	pool := req.K * 3
-	targets := []Target{}
-	if req.DB == "all" {
-		list, err := e.dbs.List()
-		if err != nil {
-			return SearchResponse{}, err
-		}
-		if len(list) == 0 {
-			return SearchResponse{}, fmt.Errorf("no hay bases registradas")
-		}
-		for _, meta := range list {
-			targets = append(targets, Target{Name: meta.Name, Collection: meta.Collection, ModelID: meta.Model, Dims: meta.Dims})
-		}
-	} else {
-		target, err := e.Resolve(req.DB)
-		if err != nil {
-			return SearchResponse{}, err
-		}
-		targets = append(targets, target)
+	targets, err := e.targets(req)
+	if err != nil {
+		return SearchResponse{}, err
 	}
 
 	sv := sparse.Encode(req.Query)

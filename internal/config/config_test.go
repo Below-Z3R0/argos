@@ -34,7 +34,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	cfg := Default()
 	cfg.Paths.Home = t.TempDir()
 	cfg.Paths.Vault = t.TempDir()
-	cfg.Defaults.Reranker = "qwen3-reranker-0.6b-q4"
+	cfg.Defaults.Reranker = "qwen3-reranker-0.6b"
 	cfg.Resources.Mode = "cpu"
 	if err := cfg.Save(path); err != nil {
 		t.Fatalf("save: %v", err)

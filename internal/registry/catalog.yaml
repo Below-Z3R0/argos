@@ -155,27 +155,29 @@ models:
         sha256: "8bf8afbfd11306bd872018c53bfdf2e160a56f8edbcf49933324404791c148d3"
     notes: "Default. MIT, multilingüe, ~71.5 BEIR. Sin restricción comercial."
 
-  - id: qwen3-reranker-0.6b-q4
-    name: Qwen3-Reranker 0.6B (q4)
+  - id: qwen3-reranker-0.6b
+    name: Qwen3-Reranker 0.6B (seq-cls)
     task: reranker
     tier: quality
     default: false
     family: qwen3
     license: Apache-2.0
     homepage: https://huggingface.co/Qwen/Qwen3-Reranker-0.6B
+    rerank_format: qwen3
+    query_instruction: "Given a web search query, retrieve relevant passages that answer the query"
     specs:
       params: "0.6B"
       max_tokens: 8192
-      quant: q4
-      ram_mb: 1300
-      disk_mb: 960
+      quant: fp32
+      ram_mb: 1600
+      disk_mb: 1200
     files:
-      - url: https://huggingface.co/onnx-community/Qwen3-Reranker-0.6B-ONNX/resolve/main/onnx/model_q4.onnx
+      - url: https://huggingface.co/shawnw3i/Qwen3-Reranker-0.6B-seq-cls-ONNX/resolve/main/model.onnx
         dest: model.onnx
-        size_mb: 949
-        sha256: ""
-      - url: https://huggingface.co/Qwen/Qwen3-Reranker-0.6B/resolve/main/tokenizer.json
+        size_mb: 1138
+        sha256: "bd3ee3865c63d1bec518d0785ff551f7c0b78af0d4bf4855653a0c765a2a1292"
+      - url: https://huggingface.co/shawnw3i/Qwen3-Reranker-0.6B-seq-cls-ONNX/resolve/main/tokenizer.json
         dest: tokenizer.json
         size_mb: 11
-        sha256: ""
-    notes: "Mejor calidad y licencia Apache-2.0, pero pide 949 MB: solo con 16 GB o GPU."
+        sha256: "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4"
+    notes: "Seq-cls export: un logit + sigmoid, sin logits de 151k tokens. 1.2 GB; no es default porque compite por RAM con el embedder."

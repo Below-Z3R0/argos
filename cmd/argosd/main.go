@@ -109,6 +109,8 @@ func main() {
 				Device:        cfg.Resources.Devices.Rerank,
 				GPUIndex:      -1,
 				Threads:       cfg.Resources.Threads,
+				Format:        m.RerankFormat,
+				Instruction:   m.QueryInstruction,
 			})
 		},
 	}

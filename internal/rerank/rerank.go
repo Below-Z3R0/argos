@@ -31,8 +31,10 @@ type Options struct {
 	GPUIndex      int
 	MaxTokens     int
 	Threads       int
-	BatchSize     int // pairs per forward pass
-	PairTokens    int // max tokens per pair; 0 uses MaxTokens
+	BatchSize     int    // pairs per forward pass
+	PairTokens    int    // max tokens per pair; 0 uses MaxTokens
+	Format        string // ""/xlmr or qwen3 (ChatML seq-cls)
+	Instruction   string // reranker task instruction for qwen3
 }
 
 // Reranker is a cross-encoder session.
@@ -44,6 +46,8 @@ type Reranker struct {
 	pairLimit int
 	batch     int
 	provider  string
+	format    string
+	instruct  string
 	mu        sync.Mutex
 }
 
@@ -58,9 +62,13 @@ func New(opts Options) (*Reranker, error) {
 	if opts.BatchSize <= 0 {
 		opts.BatchSize = 8
 	}
-	ids, err := specialIDs(opts.TokenizerPath)
-	if err != nil {
-		return nil, err
+	ids := [2]int64{}
+	if opts.Format != "qwen3" {
+		var err error
+		ids, err = specialIDs(opts.TokenizerPath)
+		if err != nil {
+			return nil, err
+		}
 	}
 	tok, err := tokenizers.FromFile(opts.TokenizerPath)
 	if err != nil {
@@ -105,7 +113,7 @@ func New(opts Options) (*Reranker, error) {
 	return &Reranker{
 		session: session, tok: tok, cls: ids[0], sep: ids[1],
 		maxTokens: opts.MaxTokens, pairLimit: opts.PairTokens, batch: opts.BatchSize,
-		provider: provider,
+		provider: provider, format: opts.Format, instruct: opts.Instruction,
 	}, nil
 }
 
@@ -149,6 +157,9 @@ func (r *Reranker) Score(ctx context.Context, query string, passages []string) (
 // buildPair assembles <s> query </s> </s> passage </s> and truncates from the
 // passage side, which is where the length lives.
 func (r *Reranker) buildPair(query, passage string) ([]int64, error) {
+	if r.format == "qwen3" {
+		return r.buildQwenPair(query, passage)
+	}
 	q, err := r.encode(query)
 	if err != nil {
 		return nil, err
@@ -177,7 +188,59 @@ func (r *Reranker) buildPair(query, passage string) ([]int64, error) {
 	return ids, nil
 }
 
-// runBatch pads the pairs to the longest one and returns one probability each.
+// qwenPrefix and qwenSuffix are the ChatML wrapper Qwen3-Reranker was trained
+// with. The seq-cls export folds the yes/no classifier into a single score
+// head, so the whole prompt is plain text: no manual <s> pair is involved.
+const (
+	qwenPrefix = `<|im_start|>system
+Judge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be "yes" or "no".<|im_end|>
+<|im_start|>user
+`
+	qwenSuffix = `<|im_end|>
+<|im_start|>assistant
+
+
+`
+	qwenDefaultInstruct = "Given a web search query, retrieve relevant passages that answer the query"
+)
+
+// buildQwenPair assembles the ChatML prompt and truncates the document, never
+// the prefix/suffix: cutting the assistant tail would change the scoring head.
+func (r *Reranker) buildQwenPair(query, passage string) ([]int64, error) {
+	instruct := r.instruct
+	if instruct == "" {
+		instruct = qwenDefaultInstruct
+	}
+	head := qwenPrefix + "<Instruct>: " + instruct + "\n\n<Query>: " + query + "\n\n<Document>: "
+	pre, err := r.encode(head)
+	if err != nil {
+		return nil, err
+	}
+	suf, err := r.encode(qwenSuffix)
+	if err != nil {
+		return nil, err
+	}
+	doc, err := r.encode(passage)
+	if err != nil {
+		return nil, err
+	}
+	limit := r.pairLimit
+	if limit <= 0 || limit > r.maxTokens {
+		limit = r.maxTokens
+	}
+	budget := limit - len(pre) - len(suf)
+	if budget < 16 {
+		budget = 16
+	}
+	if len(doc) > budget {
+		doc = doc[:budget]
+	}
+	ids := make([]int64, 0, len(pre)+len(doc)+len(suf))
+	ids = append(ids, pre...)
+	ids = append(ids, doc...)
+	ids = append(ids, suf...)
+	return ids, nil
+}
 func (r *Reranker) runBatch(pairs [][]int64) ([]float32, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

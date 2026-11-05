@@ -12,7 +12,9 @@ Referencia de cada tool MCP. Todas ejecutan `argosctl`; el JSON de `search` es e
 | Campo | Tipo | Default | Notas |
 |---|---|---|---|
 | `query` | string | — | Obligatorio |
-| `db` | string | config | Base a consultar |
+| `db` | string | config | Base a consultar (`all` incluido) |
+| `model` | string | — | Filtra bases por modelo |
+| `exclude_dbs` | array | — | Bases a excluir |
 | `k` | int | 20 | Pasajes devueltos |
 | `max_per_file` | int | 2 | Tope por archivo |
 | `min_score` | float | 0 | Descarta por debajo |
@@ -49,8 +51,9 @@ Crea el directorio de la base, su manifiesto y la colección en Qdrant. Requiere
 
 ## job_status / job_list / job_cancel
 
-`job_status {id}` devuelve estado, salida y código de salida. `job_list` lista los últimos 20 jobs.
-`job_cancel {id}` corta un job en ejecución; el job termina con `canceled: true`.
+`job_status {id, offset?, limit?}` devuelve estado, un rango de la salida (`total_bytes`, `more`) y el
+código de salida. `job_list` lista los últimos 20 jobs. `job_cancel {id}` corta un job en ejecución;
+el job termina con `canceled: true`.
 
 ## eval
 

@@ -25,6 +25,11 @@ type Job struct {
 	ExitCode int       `json:"exit_code"`
 	Output   string    `json:"output"`
 	Error    string    `json:"error,omitempty"`
+	// Window fields are filled by GetWindow; they let a client page a long log.
+	Offset     int  `json:"offset,omitempty"`
+	Limit      int  `json:"limit,omitempty"`
+	TotalBytes int  `json:"total_bytes"`
+	More       bool `json:"more,omitempty"`
 }
 
 // Manager keeps the live jobs.
@@ -114,6 +119,38 @@ func (m *Manager) Get(id string) (Job, bool) {
 		return Job{}, false
 	}
 	return *job, true
+}
+
+// GetWindow returns a byte range of the job output. The manager keeps the full
+// string (the runner caps how much it produces), so pagination is a slice.
+func (m *Manager) GetWindow(id string, offset, limit int) (Job, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, ok := m.jobs[id]
+	if !ok {
+		return Job{}, false
+	}
+	out := *job
+	total := len(out.Output)
+	out.TotalBytes = total
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	if limit <= 0 {
+		limit = 16 << 10
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	out.Output = job.Output[offset:end]
+	out.Offset = offset
+	out.Limit = limit
+	out.More = end < total
+	return out, true
 }
 
 // List returns every live job, newest first.

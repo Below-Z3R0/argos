@@ -180,6 +180,45 @@ func TestSearchEmbedsOncePerModelAcrossDBs(t *testing.T) {
 	}
 }
 
+func TestTargetsSelector(t *testing.T) {
+	cfg := testConfig(t)
+	src := t.TempDir()
+	mgr := dbpkg.New(filepath.Join(cfg.Paths.Home, "dbs"))
+	for _, name := range []string{"uno", "dos"} {
+		dir := filepath.Join(src, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mgr.Create(dbpkg.Meta{Name: name, Source: dir, Model: "embed", Dims: 2}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := New(cfg, catalog(), &fakeStore{}, Factories{})
+	check := func(req SearchRequest, want ...string) {
+		t.Helper()
+		got, err := e.targets(req)
+		if err != nil {
+			t.Fatalf("%+v: %v", req, err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("%+v: got %d targets, want %d", req, len(got), len(want))
+		}
+		for i := range want {
+			if got[i].Name != want[i] {
+				t.Fatalf("%+v: target %d = %q, want %q", req, i, got[i].Name, want[i])
+			}
+		}
+	}
+	check(SearchRequest{DB: "all"}, "dos", "uno")
+	check(SearchRequest{DB: "uno"}, "uno")
+	check(SearchRequest{DB: "uno,dos"}, "dos", "uno")
+	check(SearchRequest{DB: "all", ExcludeDBs: []string{"uno"}}, "dos")
+	check(SearchRequest{DB: "all", Model: "embed"}, "dos", "uno")
+	if _, err := e.targets(SearchRequest{DB: "all", Model: "nope"}); err == nil {
+		t.Fatal("expected an error for a model with no bases")
+	}
+}
+
 func TestResolveNamedDB(t *testing.T) {
 	cfg := testConfig(t)
 	src := t.TempDir()

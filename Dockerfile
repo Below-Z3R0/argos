@@ -6,6 +6,7 @@ FROM golang:1.27-bookworm AS build
 ARG ORT_VERSION=1.31.0
 ARG ORT_FLAVOR=cpu          # cpu | gpu
 ARG TOKENIZERS_VERSION=1.27.0
+ARG TARGETARCH=amd64
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl \
@@ -19,6 +20,9 @@ RUN set -eux; \
     if [ "$ORT_FLAVOR" = "gpu" ]; then \
       asset="onnxruntime-linux-x64-gpu_cuda12-${ORT_VERSION}.tgz"; \
       dir="onnxruntime-linux-x64-gpu_cuda12-${ORT_VERSION}"; \
+    elif [ "$TARGETARCH" = "arm64" ]; then \
+      asset="onnxruntime-linux-aarch64-${ORT_VERSION}.tgz"; \
+      dir="onnxruntime-linux-aarch64-${ORT_VERSION}"; \
     else \
       asset="onnxruntime-linux-x64-${ORT_VERSION}.tgz"; \
       dir="onnxruntime-linux-x64-${ORT_VERSION}"; \
@@ -28,9 +32,11 @@ RUN set -eux; \
     mv "/opt/${dir}" /opt/onnxruntime
 
 # HuggingFace tokenizers, statically linked (needed by cgo at build time).
-RUN curl -fsSL "https://github.com/daulet/tokenizers/releases/download/v${TOKENIZERS_VERSION}/libtokenizers.linux-amd64.tar.gz" -o /tmp/lt.tgz \
-    && mkdir -p /opt/libtokenizers \
-    && tar -xzf /tmp/lt.tgz -C /opt/libtokenizers
+RUN set -eux; \
+    if [ "$TARGETARCH" = "arm64" ]; then tok_arch="aarch64"; else tok_arch="amd64"; fi; \
+    curl -fsSL "https://github.com/daulet/tokenizers/releases/download/v${TOKENIZERS_VERSION}/libtokenizers.linux-${tok_arch}.tar.gz" -o /tmp/lt.tgz; \
+    mkdir -p /opt/libtokenizers; \
+    tar -xzf /tmp/lt.tgz -C /opt/libtokenizers
 
 WORKDIR /src
 COPY go.mod go.sum ./
