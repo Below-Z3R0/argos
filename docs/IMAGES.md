@@ -6,8 +6,8 @@ llevan compilado y qué runtime de vendor incluyen.
 | Tag | Base | ORT | GPU | Aceleración de CPU | Tamaño |
 |---|---|---|---|---|---|
 | `argos:nvidia` | `nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04` | build oficial `gpu_cuda12` | NVIDIA (CUDA) | MLAS (AVX2/AVX512) | 8.7 GB (medido) |
-| `argos:intel` | `debian:13-slim` + OpenVINO runtime | compilado `--use_openvino` | Intel iGPU/Arc (OpenVINO) | **OpenVINO CPU** (oneDNN) | ~2.5 GB |
-| `argos:amd` | `rocm/dev-ubuntu-24.04` | compilado `--use_migraphx` | AMD (MIGraphX) | MLAS; ZenDNN opcional | ~8–10 GB |
+| `argos:intel` | `openvino/ubuntu24_runtime:2025.3.0` | compilado `--use_openvino` | Intel iGPU/Arc (OpenVINO) | **OpenVINO CPU** (oneDNN) | ~3 GB |
+| `argos:amd` | `rocm/dev-ubuntu-24.04:6.4` | compilado `--use_migraphx` | AMD (MIGraphX) | MLAS; ZenDNN opcional | ~10 GB |
 
 Reglas:
 
@@ -51,7 +51,14 @@ docker build --target runtime-gpu --build-arg ORT_FLAVOR=gpu -t argos:nvidia .
 
 Usa el asset `onnxruntime-linux-x64-gpu_cuda12-1.31.0.tgz` y copia `libonnxruntime_providers_*.so`.
 
-### Intel (pendiente de target)
+### Intel
+
+Target `runtime-intel` implementado (experimental: no se construyó completo en esta máquina).
+
+```sh
+docker build --target runtime-intel -t argos:intel .
+```
+
 
 1. Instalar OpenVINO runtime (deb oficial o tarball) en la imagen final.
 2. Compilar ORT desde fuente:
@@ -64,7 +71,14 @@ Usa el asset `onnxruntime-linux-x64-gpu_cuda12-1.31.0.tgz` y copia `libonnxrunti
 3. Copiar `libonnxruntime.so*` y `libonnxruntime_providers_openvino.so`.
 4. En runtime, `device_type=GPU` (o `AUTO:GPU,CPU`) para iGPU; `CPU` para CPU.
 
-### AMD (pendiente de target)
+### AMD
+
+Target `runtime-amd` implementado (experimental: build de ~45 min, sin hardware AMD para probar).
+
+```sh
+docker build --target runtime-amd -t argos:amd .
+```
+
 
 1. Base con ROCm + MIGraphX.
 2. Compilar ORT:
@@ -124,5 +138,5 @@ Las imágenes de un registry no caducan: lo efímero es el runner que las constr
   ORT (ORT permite combinarlos en un build, pero con todos los runtimes de vendor adentro: ~16 GB).
 - Si el CPU es de una marca y la dGPU de otra (Intel + NVIDIA), la imagen elegida acelera la GPU y
   el CPU queda en MLAS. No hay doble aceleración salvo un build multi-EP a medida.
-- Las imágenes de Intel/AMD todavía no están construidas; este documento es el contrato para la
-  sesión que las agregue.
+- Los targets Intel/AMD existen y pasan `buildx --call=check`, pero **no se ejecutaron completos**
+  (AMD necesita ~45 min y hardware para validar).

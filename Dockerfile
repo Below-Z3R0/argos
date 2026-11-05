@@ -97,3 +97,92 @@ VOLUME ["/home/argos"]
 EXPOSE 7712 7711
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["argosd", "--addr", "0.0.0.0:7712"]
+
+# --- ONNX Runtime with OpenVINO (Intel CPU + iGPU) --------------------------
+# Experimental: this compiles ONNX Runtime from source. Takes ~20-30 min and
+# needs ~10 GB of build cache. The runtime image drops the toolchain.
+FROM openvino/ubuntu24_dev:2025.3.0 AS ort-intel
+
+ARG ORT_VERSION=1.31.0
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git cmake ninja-build build-essential python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch "v${ORT_VERSION}" --recurse-submodules \
+      --shallow-submodules https://github.com/microsoft/onnxruntime.git /ort
+
+WORKDIR /ort
+RUN ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
+      --skip_submodule_sync --use_openvino CPU_FP32 \
+      --build_dir /build
+
+FROM openvino/ubuntu24_runtime:2025.3.0 AS runtime-intel
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl poppler-utils tini libstdc++6 libgomp1 passwd \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ort-intel /build/Release/libonnxruntime.so* /usr/local/lib/
+COPY --from=ort-intel /build/Release/libonnxruntime_providers_*.so /usr/local/lib/
+COPY --from=build /out/ /usr/local/bin/
+
+ENV ARGOS_ORT_LIB=/usr/local/lib/libonnxruntime.so \
+    HOME=/home/argos \
+    ARGOS_HOME=/home/argos/.local/share/argos
+
+RUN userdel -r ubuntu 2>/dev/null || true; \
+    if ! id -u argos >/dev/null 2>&1; then useradd -m -u 1000 argos; fi
+USER argos
+WORKDIR /home/argos
+
+VOLUME ["/home/argos"]
+
+EXPOSE 7712 7711
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["argosd", "--addr", "0.0.0.0:7712"]
+
+# --- ONNX Runtime with MIGraphX (AMD) ---------------------------------------
+# Experimental: ROCm ships no prebuilt ONNX Runtime, and the ROCm EP was
+# removed from ORT; AMD recommends MIGraphX. Build takes ~45 min and the image
+# is large (ROCm runtime included).
+FROM rocm/dev-ubuntu-24.04:6.4 AS ort-amd
+
+ARG ORT_VERSION=1.31.0
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git cmake ninja-build build-essential python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch "v${ORT_VERSION}" --recurse-submodules \
+      --shallow-submodules https://github.com/microsoft/onnxruntime.git /ort
+
+WORKDIR /ort
+RUN ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
+      --skip_submodule_sync --use_migraphx --migraphx_home /opt/rocm \
+      --build_dir /build
+
+FROM rocm/dev-ubuntu-24.04:6.4 AS runtime-amd
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl poppler-utils tini libstdc++6 libgomp1 passwd \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ort-amd /build/Release/libonnxruntime.so* /usr/local/lib/
+COPY --from=ort-amd /build/Release/libonnxruntime_providers_*.so /usr/local/lib/
+COPY --from=build /out/ /usr/local/bin/
+
+ENV ARGOS_ORT_LIB=/usr/local/lib/libonnxruntime.so \
+    HOME=/home/argos \
+    ARGOS_HOME=/home/argos/.local/share/argos
+
+RUN userdel -r ubuntu 2>/dev/null || true; \
+    if ! id -u argos >/dev/null 2>&1; then useradd -m -u 1000 argos; fi
+USER argos
+WORKDIR /home/argos
+
+VOLUME ["/home/argos"]
+
+EXPOSE 7712 7711
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["argosd", "--addr", "0.0.0.0:7712"]

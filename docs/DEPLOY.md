@@ -108,6 +108,20 @@ sesiones ONNX.
 libres al sistema. Medido: 23 MB en reposo → 1.74 GB con ambos modelos → **139 MB tras `unload all`**;
 segundo ciclo: 1.99 GB → 92 MB. No hace falta reiniciar el contenedor para recuperar la memoria.
 
+## Docling (PDF escaneado)
+
+Probado con la imagen `docling-serve-cpu:v1.37.0` y un PDF **sin capa de texto** (0 caracteres con
+`pdftotext`, 281 KB): Docling lo convirtió y el índice quedó con **3 chunks** y el código Java
+extraído, en 27 s (incluye carga del embedder). Docling en CPU usa ~2 GB de RAM.
+
+```sh
+docker compose --profile layout up -d
+argosctl index --db scanned --include .pdf --path /ruta/al.pdf
+```
+
+`layout.mode: auto` rutea solo los PDFs con `needs_ocr`; `always` manda todos; `never` usa solo
+`pdftotext`.
+
 ## Snapshots
 
 ```sh
