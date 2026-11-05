@@ -307,9 +307,14 @@ func (s *Store) Count(ctx context.Context, collection string, filter map[string]
 	return n, nil
 }
 
-// DeleteCollection drops a collection and everything in it.
+// DeleteCollection drops a collection and everything in it. A missing
+// collection is not an error: the base may have been removed out of band.
 func (s *Store) DeleteCollection(ctx context.Context, name string) error {
-	return s.client.DeleteCollection(ctx, name)
+	err := s.client.DeleteCollection(ctx, name)
+	if status.Code(err) == codes.NotFound {
+		return nil
+	}
+	return err
 }
 
 func filterFor(fields map[string]string) *qdrant.Filter {

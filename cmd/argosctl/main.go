@@ -1167,8 +1167,31 @@ func setKey(cfg *config.Config, key, value string) error {
 }
 
 // warnDimsMismatch is informational: index.dims only affects new collections,
-// so changing it never rewrites an existing base.
+// so changing it never rewrites an existing base. It still warns when the
+// default collection or a registered base would stop matching the embedder.
 func warnDimsMismatch(cfg config.Config) {
+	want := cfg.Index.Dims
+	if want == 0 {
+		if cat, err := openCatalog(); err == nil {
+			if m, err := cat.Get(cfg.Defaults.Embedding); err == nil {
+				want = m.EffectiveDims()
+			}
+		}
+	}
+	if host, portStr, err := net.SplitHostPort(cfg.Qdrant.URL); err == nil {
+		if port, err := strconv.Atoi(portStr); err == nil {
+			if st, err := qstore.NewWithREST(host, port, cfg.Qdrant.RESTURL, cfg.Qdrant.SnapshotsPath); err == nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				dim, derr := st.CollectionDim(ctx, cfg.Index.Collection)
+				cancel()
+				st.Close()
+				if derr == nil && dim != 0 && want != 0 && dim != want {
+					fmt.Fprintf(os.Stderr, "aviso: la colección default %s usa %d dims; index.dims=%d solo aplica a bases nuevas\n",
+						cfg.Index.Collection, dim, want)
+				}
+			}
+		}
+	}
 	mgr := dbpkg.New(filepath.Join(cfg.Paths.Home, "dbs"))
 	list, err := mgr.List()
 	if err != nil {
@@ -1811,16 +1834,24 @@ func dbRemove(cfg config.Config, mgr *dbpkg.Manager, args []string) error {
 		return fmt.Errorf("esto borra la base %s y su colección; repetí con --force", meta.Name)
 	}
 	host, portStr, err := net.SplitHostPort(cfg.Qdrant.URL)
-	if err == nil {
-		if port, perr := strconv.Atoi(portStr); perr == nil {
-			if st, serr := qstore.NewWithREST(host, port, cfg.Qdrant.RESTURL, cfg.Qdrant.SnapshotsPath); serr == nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				_ = st.DeleteCollection(ctx, meta.Collection)
-				cancel()
-				st.Close()
-			}
-		}
+	if err != nil {
+		return fmt.Errorf("qdrant.url debe ser host:puerto: %w", err)
 	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return err
+	}
+	st, err := qstore.NewWithREST(host, port, cfg.Qdrant.RESTURL, cfg.Qdrant.SnapshotsPath)
+	if err != nil {
+		return fmt.Errorf("qdrant no disponible: %w (la base no se borró)", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := st.DeleteCollection(ctx, meta.Collection); err != nil {
+		st.Close()
+		return fmt.Errorf("no se pudo borrar la colección %s: %w (la base no se borró)", meta.Collection, err)
+	}
+	st.Close()
 	if err := mgr.Remove(meta.Name); err != nil {
 		return err
 	}
