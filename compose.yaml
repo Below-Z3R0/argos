@@ -15,8 +15,9 @@
 # instalan una vez con el CTL del servicio.
 #
 # El estado se bind-montea desde el host para que el CLI nativo y los
-# contenedores hablen del mismo sitio: una sola copia de modelos, bases y
-# manifiestos. El uid del host (1000) es el del usuario `argos` de la imagen.
+# contenedores hablen del mismo sitio: una sola copia de modelos, bases,
+# manifiestos y config. El uid del host (1000) es el del usuario `argos` de
+# la imagen. Todo vive bajo ~/Services/argos.
 #
 # El vault se monta en la MISMA ruta absoluta que en el host porque
 # `dbs/<nombre>/meta.json` guarda la ruta del corpus tal cual: si difiere, el
@@ -52,13 +53,13 @@ services:
     environment:
       ARGOS_QDRANT_URL: qdrant:6334
       ARGOS_LOG_LEVEL: info
-      ARGOS_HOME: ${ARGOS_HOME:-${HOME}/.local/share/argos}
+      ARGOS_HOME: ${ARGOS_HOME:-${HOME}/Services/argos}
       ARGOS_VAULT: ${VAULT_PATH:-${HOME}/Documents/Knowledge}
     volumes:
-      # Estado compartido: la misma ruta absoluta dentro y fuera, para que el
-      # config del host (paths.home, paths.vault) apunte al mismo sitio.
-      - ${ARGOS_HOME:-${HOME}/.local/share/argos}:${ARGOS_HOME:-${HOME}/.local/share/argos}
-      - ${HOME}/.config/argos:/home/argos/.config/argos
+      # Estado compartido: la misma ruta absoluta dentro y fuera, para que la
+      # config del host (config.yaml, models.yaml) y los modelos sean un solo
+      # sitio. La config vive dentro de ARGOS_HOME, así que viene con el mount.
+      - ${ARGOS_HOME:-${HOME}/Services/argos}:${ARGOS_HOME:-${HOME}/Services/argos}
       - ${VAULT_PATH:-${HOME}/Documents/Knowledge}:${VAULT_PATH:-${HOME}/Documents/Knowledge}:ro
     ports:
       - "127.0.0.1:7712:7712"
@@ -90,10 +91,9 @@ services:
       ARGOS_QDRANT_URL: qdrant:6334
       ARGOS_VAULT: ${VAULT_PATH:-${HOME}/Documents/Knowledge}
       ARGOS_SERVICE_URL: http://argosd:7712
-      ARGOS_HOME: ${ARGOS_HOME:-${HOME}/.local/share/argos}
+      ARGOS_HOME: ${ARGOS_HOME:-${HOME}/Services/argos}
     volumes:
-      - ${ARGOS_HOME:-${HOME}/.local/share/argos}:${ARGOS_HOME:-${HOME}/.local/share/argos}
-      - ${HOME}/.config/argos:/home/argos/.config/argos
+      - ${ARGOS_HOME:-${HOME}/Services/argos}:${ARGOS_HOME:-${HOME}/Services/argos}
       - ${VAULT_PATH:-${HOME}/Documents/Knowledge}:${VAULT_PATH:-${HOME}/Documents/Knowledge}:ro
     ports:
       - "127.0.0.1:7711:7711"

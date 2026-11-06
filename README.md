@@ -8,7 +8,7 @@ Reemplaza el RAG en Python que vive en `~/Documents/Knowledge/.rag/`.
 - Mapa de componentes: [`docs/COMPONENTS.md`](docs/COMPONENTS.md)
 - Catálogo de modelos: [`docs/MODELS.md`](docs/MODELS.md)
 - Roadmap (plugin y mejoras): [`docs/ROADMAP.md`](docs/ROADMAP.md)
-- Despliegue: `~/Documents/Docker/argos/compose.yaml`
+- Despliegue: `~/Documents/Github/argos/compose.yaml`
 - Fuente de verdad: el vault. El índice es derivado y reconstruible.
 
 ## MCP
@@ -41,7 +41,7 @@ Unidad de ejemplo: [`docs/systemd/argosd.service`](docs/systemd/argosd.service).
 
 ```sh
 make build
-./argosctl init                 # crea ~/.local/share/argos y el .env del stack
+./argosctl init                 # crea ~/Services/argos y el .env del stack
 ./argosctl models catalog       # qué modelos hay, con specs y estado
 ./argosctl models sync e5-base   # fija los sha256 (descarga)
 # si ya está instalado con --allow-unpinned:
@@ -51,7 +51,7 @@ make build
 ```
 
 `models install` exige sha256 pinneado: `sync` es el paso que los calcula y los guarda en
-`~/.config/argos/models.yaml`.
+`~/Services/argos/models.yaml`.
 
 Estado: **fase 0 en curso** — CLI, config, catálogo y store de modelos funcionando; faltan los spikes
 de ONNX, PDF y layout.

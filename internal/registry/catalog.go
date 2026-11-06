@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Below-Z3R0/argos/internal/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -288,14 +289,12 @@ func StoreDir(task string) (string, error) {
 	}
 }
 
-// UserCatalogPath is the optional override file.
+// UserCatalogPath is the optional override file. It sits next to the config,
+// inside the state root.
 func UserCatalogPath() (string, error) {
-	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "argos", "models.yaml"), nil
+	home := config.Home()
+	if home == "" {
+		return "", errors.New("cannot resolve the home directory")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".config", "argos", "models.yaml"), nil
+	return filepath.Join(home, "models.yaml"), nil
 }

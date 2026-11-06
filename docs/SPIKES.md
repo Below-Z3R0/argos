@@ -49,9 +49,9 @@ embeber se alimentan 56 tensores vacíos de forma `[1, 8, 0, 128]` y se ignora t
 ### Reproducir
 
 ```sh
-export CGO_LDFLAGS="-L$HOME/.local/share/argos/runtime/libtokenizers"
-ARGOS_MODEL_DIR=$HOME/.local/share/argos/models/embeddings/qwen3-embed-0.6b \
-ARGOS_ORT_LIB=$HOME/.local/share/argos/runtime/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so \
+export CGO_LDFLAGS="-L$HOME/Services/argos/runtime/libtokenizers"
+ARGOS_MODEL_DIR=$HOME/Services/argos/models/embeddings/qwen3-embed-0.6b \
+ARGOS_ORT_LIB=$HOME/Services/argos/runtime/onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so \
 go test ./internal/embed -run TestGoldenVectors -v
 ```
 

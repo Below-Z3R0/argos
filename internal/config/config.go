@@ -142,16 +142,18 @@ func Default() Config {
 	}
 }
 
-// FilePath is where the config lives.
+// FilePath is where the config lives: inside the state root, next to the
+// models and the bases, so moving or backing up ARGOS_HOME carries the
+// configuration with it. ARGOS_CONFIG overrides the whole path.
 func FilePath() (string, error) {
-	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "argos", "config.yaml"), nil
+	if p := os.Getenv("ARGOS_CONFIG"); p != "" {
+		return p, nil
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
+	home := defaultHome()
+	if home == "" {
+		return "", errors.New("cannot resolve the home directory")
 	}
-	return filepath.Join(home, ".config", "argos", "config.yaml"), nil
+	return filepath.Join(home, "config.yaml"), nil
 }
 
 // Load reads path. A missing file is not an error: it returns the defaults.
@@ -256,15 +258,19 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// Home is the state root: models, runtime, bases and the config file all live
+// under it, so one directory holds everything the service needs and a backup
+// is a single copy.
+func Home() string {
+	return defaultHome()
+}
+
 func defaultHome() string {
 	if dir := os.Getenv("ARGOS_HOME"); dir != "" {
 		return dir
 	}
-	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
-		return filepath.Join(dir, "argos")
-	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".local", "share", "argos")
+		return filepath.Join(home, "Services", "argos")
 	}
 	return ""
 }
@@ -298,10 +304,15 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// defaultCompose is where `argosctl init` writes the stack's .env: the
+// repository checkout, not a copy under Documents/Docker.
 func defaultCompose() string {
+	if dir := os.Getenv("ARGOS_COMPOSE_DIR"); dir != "" {
+		return dir
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, "Documents", "Docker", "argos")
+	return filepath.Join(home, "Documents", "Github", "argos")
 }

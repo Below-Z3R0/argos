@@ -50,9 +50,9 @@ es legacy y no se usa en el camino actual.
 | Variable | Valor | Quién la setea |
 |---|---|---|
 | `ARGOS_ORT_LIB` | `/usr/local/lib/libonnxruntime.so` | base `b3l0w-ort` |
-| `ARGOS_HOME` | `/home/argos/.local/share/argos` | base / compose |
+| `ARGOS_HOME` | `/home/b3low-z3r0/Services/argos` | compose (bind mount, misma ruta dentro y fuera) |
 | `ARGOS_QDRANT_URL` | `qdrant:6334` | compose |
-| `ARGOS_VAULT` | `/vault` | compose |
+| `ARGOS_VAULT` | `/home/b3low-z3r0/Documents/Knowledge` | compose (misma ruta que el host) |
 | `ARGOS_SERVICE_URL` | `http://argosd:7712` | compose del MCP |
 
 Dispositivos:

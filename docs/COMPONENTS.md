@@ -38,7 +38,7 @@ dominio importa `cmd`; `api` y `mcp` no contienen lógica, solo traducción.
 | Paquete | Responsabilidad | Expone | Depende de |
 |---|---|---|---|
 | `internal/types` | Structs puros compartidos, hoy `Point` | Tipos | stdlib |
-| `internal/config` | Cargar YAML + env, defaults, validación, rutas XDG, escritura atómica | `Config`, `Load`, `Save` | types |
+| `internal/config` | Cargar YAML + env, defaults, validación, rutas del estado, escritura atómica | `Config`, `Load`, `Save` | types |
 | `internal/version` | Build info (`commit`, `date`, `version`) | `Info()` | — |
 | `internal/telemetry` | `slog` JSON, run IDs, contadores | `Logger`, `Metrics` | config |
 | `internal/progress` | Reporter de progreso: TTY, JSON lines, SSE | `Reporter` | types |

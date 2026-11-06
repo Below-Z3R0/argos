@@ -165,7 +165,7 @@ El catálogo, el estado instalado y el flujo de `models use` están especificado
 [`MODELS.md`](MODELS.md). Acá queda solo el contrato de código.
 
 `internal/registry/catalog.yaml`, embebido con `embed.FS` y sobreescribible por el usuario en
-`~/.config/argos/models.yaml`:
+`~/Services/argos/models.yaml`:
 
 ```yaml
 models:
@@ -192,7 +192,7 @@ models:
 Reglas:
 
 1. **El catálogo es dato, no código.** `argosctl models add <hf-repo>` calcula los sha256, escribe la
-   entrada en `~/.config/argos/models.yaml` y descarga a `~/.local/share/argos/models/<id>/`.
+   entrada en `~/Services/argos/models.yaml` y descarga a `~/Services/argos/models/<id>/`.
 2. **El embedder aplica sus propios prefijos o instrucciones.** El llamador nunca arma el texto con
    prefijos: si se olvida, la calidad cae sin error visible.
 3. **Cada base fija su modelo al crearse** (`db create --model ...`), y `db info` lo muestra.
@@ -283,7 +283,7 @@ comparte memoria y en un modelo de 0.6B suele perder contra 12 núcleos.
 ## 5. Bases (multi-DB)
 
 ```
-~/.local/share/argos/
+~/Services/argos/
 ├── dbs/
 │   ├── knowledge/{meta.json,manifest.db}
 │   └── proyectos/{meta.json,manifest.db}
@@ -532,7 +532,7 @@ argosctl config set filters.exclude_dirs .git,.obsidian,node_modules
 El estado **no vive dentro del corpus**: va en un directorio reservado, configurable.
 
 ```
-${ARGOS_HOME:-~/.local/share/argos}/
+${ARGOS_HOME:-~/Services/argos}/
 ├── data/       manifiesto y config runtime
 ├── models/     embeddings/ y rerankers/
 └── qdrant/     storage de Qdrant
@@ -579,7 +579,7 @@ server.
 
 ## 11. Docker (destino)
 
-`~/Documents/Docker/argos/compose.yaml`. El Dockerfile debe respetar: base Debian (no Alpine),
+`~/Documents/Github/argos/compose.yaml`. El Dockerfile debe respetar: base Debian (no Alpine),
 modelos en volumen, vault `:ro`, `data/` escribible, bind loopback.
 
 ---

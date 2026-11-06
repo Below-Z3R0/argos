@@ -151,7 +151,7 @@ argos:<variante>-<sha>
 ```
 
 ```sh
-cd ~/Documents/Docker/argos
+cd ~/Documents/Github/argos
 docker compose up -d
 docker compose -f compose.yaml -f compose.gpu.yml up -d   # NVIDIA
 docker compose -f compose.yaml -f compose.dri.yml up -d   # Intel/AMD

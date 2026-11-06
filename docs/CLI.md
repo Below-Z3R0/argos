@@ -4,19 +4,20 @@ Dos binarios: `argosctl` (operación) y `argosd` (servicio). `argos-mcp` expone 
 
 No hay flags globales (`--config`, `--json`, `--quiet`, etc.) en esta versión: cada subcomando declara
 sus propios flags. La configuración se resuelve por variables de entorno y
-`~/.config/argos/config.yaml`.
+`$ARGOS_HOME/config.yaml` (por defecto `~/Services/argos/config.yaml`).
 
 ## Variables de entorno
 
 | Variable | Efecto |
 |---|---|
-| `ARGOS_HOME` | Raíz de estado (`data/`, `models/`, `qdrant/`). |
+| `ARGOS_HOME` | Raíz de estado y config (`config.yaml`, `models.yaml`, `data/`, `models/`, `dbs/`, `runtime/`). Por defecto `~/Services/argos`. |
+| `ARGOS_CONFIG` | Ruta explícita del `config.yaml`. Gana sobre `ARGOS_HOME`. |
+| `ARGOS_COMPOSE_DIR` | Checkout del repo donde `init` escribe el `.env`. Por defecto `~/Documents/Github/argos`. |
 | `ARGOS_VAULT` | Corpus por defecto. |
 | `ARGOS_QDRANT_URL` | Endpoint gRPC (`host:port`). |
 | `ARGOS_SERVICE_URL` | URL de `argosd` para el fast path del CLI. |
 | `ARGOS_ORT_LIB` | `libonnxruntime.so` a usar. |
 | `ARGOS_LAYOUT_URL` / `ARGOS_LAYOUT` | Docling y modo `auto|always|never`. |
-| `XDG_CONFIG_HOME` | Dónde buscar `argos/config.yaml`. |
 
 ## init / paths
 

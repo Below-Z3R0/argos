@@ -17,7 +17,7 @@ tener specs comparables (params, dims, RAM, cuantización), tiers y un link ofic
 ## Formato
 
 `internal/registry/catalog.yaml`, embebido con `go:embed`. El usuario puede sobreescribir entradas
-en `~/.config/argos/models.yaml` (mismo esquema, gana la última).
+en `/home/b3low-z3r0/Services/argos/models.yaml` (mismo esquema, gana la última).
 
 ```yaml
 version: 1
@@ -79,7 +79,7 @@ elige por una razón concreta (velocidad, respaldo, hardware limitado).
 Hay **dos stores de modelos**, separados por tarea:
 
 ```
-~/.local/share/argos/models/
+~/Services/argos/models/
 ├── embeddings/<id>/     {model.onnx, tokenizer.json, installed.json}
 └── rerankers/<id>/      {model.onnx, tokenizer.json, installed.json}
 ```
@@ -170,7 +170,7 @@ La ficha completa (URLs, hashes, notas, homepage) sigue estando en `models show 
 6. Descarga cada archivo a `<id>/.tmp`, verifica sha256 y renombra atómicamente. Si falla, borra el
    `.tmp` y deja el estado anterior intacto. El progreso se muestra en stdout; no hay flag
    `--progress` en esta versión.
-7. Escribe `default` en `~/.config/argos/config.yaml`.
+7. Escribe `default` en `~/Services/argos/config.yaml`.
 8. Avisa si hay bases creadas con otro modelo (no se tocan).
 
 ### `models remove`
