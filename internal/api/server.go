@@ -20,7 +20,9 @@ type Engine interface {
 	Metrics() string
 	Ready(ctx context.Context) error
 	Load(ctx context.Context, kind string) error
+	LoadModel(ctx context.Context, id string) error
 	Unload(kind string)
+	UnloadModel(id string) error
 }
 
 // Server wires the handlers.
@@ -136,12 +138,27 @@ func (s *Server) modelAction(w http.ResponseWriter, r *http.Request, load bool) 
 	if load {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 		defer cancel()
-		if err := s.engine.Load(ctx, req.Model); err != nil {
+		var err error
+		switch req.Model {
+		case "embed", "rerank", "all":
+			err = s.engine.Load(ctx, req.Model)
+		default:
+			err = s.engine.LoadModel(ctx, req.Model)
+		}
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
 	} else {
-		s.engine.Unload(req.Model)
+		switch req.Model {
+		case "embed", "rerank", "all":
+			s.engine.Unload(req.Model)
+		default:
+			if err := s.engine.UnloadModel(req.Model); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
 	}
 	writeJSON(w, map[string]any{"model": req.Model, "loaded": load})
 }

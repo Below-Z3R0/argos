@@ -308,6 +308,18 @@ func (o *ORT) kvFor(batch int) ([]ort.Value, error) {
 	return out, nil
 }
 
+// CountTokens returns the token count for the model's tokenizer. It is used by
+// the indexer's chunk splitter so the process does not load a second tokenizer.
+func (o *ORT) CountTokens(text string) int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	enc, err := o.tok.EncodeWithOptionsErr(text, true)
+	if err != nil {
+		return 0
+	}
+	return len(enc.IDs)
+}
+
 // EmbedPassages embeds documents. With BatchSize > 1 it pads a batch to the
 // longest row and runs one forward pass, which amortizes runtime overhead but
 // pays a padding tax; the spike decides whether it wins on this hardware.

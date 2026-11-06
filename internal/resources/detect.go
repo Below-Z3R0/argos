@@ -102,6 +102,27 @@ func readTrim(path string) string {
 	return strings.TrimSpace(string(data))
 }
 
+// AvailableRAMMB returns MemAvailable in megabytes. It returns 0 when the
+// platform does not expose it, which callers treat as "unknown, do not block".
+func AvailableRAMMB() int {
+	data, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "MemAvailable:" {
+			continue
+		}
+		kb, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return 0
+		}
+		return kb / 1024
+	}
+	return 0
+}
+
 // Best picks the device for `auto`: a discrete GPU first, then the integrated
 // one, then nothing (CPU).
 func Best(gpus []GPU) (GPU, bool) {

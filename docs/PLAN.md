@@ -1,5 +1,10 @@
 # Argos — reescritura del RAG en Go (v2)
 
+> **Estado 2026-11-06:** documento de diseño; algunos comandos son aspiracionales
+> (`resources`, `gpu`, `--progress`, `serve`, etc.). La referencia de lo que existe hoy es
+> [`CLI.md`](CLI.md).
+
+
 **Objetivo:** reemplazar el RAG en Python (`.rag/`, 565 MB) por un servicio en Go que indexe el vault
 en Qdrant, con varias bases independientes, búsqueda cruzada entre ellas y control explícito de
 recursos.
@@ -114,7 +119,7 @@ internal/store       cliente Qdrant + doble de test
 internal/manifest    bbolt: archivo → hash, puntos, generación
 internal/ingest      diff, lotes, progreso, reanudación, límites
 internal/resources   política cpu/gpu/ram, detección de hardware
-internal/search      densa, híbrida, fan-out entre bases, dedupe
+internal/service     densa, híbrida, fan-out entre bases, dedupe
 internal/api         REST + SSE
 internal/mcp         tools sobre el mismo backend
 internal/progress    reporter TTY / JSON lines

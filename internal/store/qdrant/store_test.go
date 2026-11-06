@@ -44,8 +44,15 @@ func TestEnsureCollectionIsIdempotent(t *testing.T) {
 	defer s.DeleteCollection(ctx, name)
 
 	for i := 0; i < 2; i++ {
-		if err := s.EnsureCollection(ctx, name, 8, ""); err != nil {
+		created, err := s.EnsureCollection(ctx, name, 8, "")
+		if err != nil {
 			t.Fatalf("attempt %d: %v", i, err)
+		}
+		if i == 0 && !created {
+			t.Fatal("first call did not create the collection")
+		}
+		if i == 1 && created {
+			t.Fatal("second call reported a new collection")
 		}
 	}
 }
@@ -56,7 +63,7 @@ func TestUpsertCountAndSearch(t *testing.T) {
 	name := collection(t)
 	defer s.DeleteCollection(ctx, name)
 
-	if err := s.EnsureCollection(ctx, name, 8, ""); err != nil {
+	if _, err := s.EnsureCollection(ctx, name, 8, ""); err != nil {
 		t.Fatal(err)
 	}
 	err := s.Upsert(ctx, name, []Point{
@@ -93,7 +100,7 @@ func TestUpsertIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	name := collection(t)
 	defer s.DeleteCollection(ctx, name)
-	if err := s.EnsureCollection(ctx, name, 8, ""); err != nil {
+	if _, err := s.EnsureCollection(ctx, name, 8, ""); err != nil {
 		t.Fatal(err)
 	}
 	p := []Point{{ID: "44444444-4444-4444-4444-444444444444", Vector: vec(1), Payload: map[string]any{"file_hash": "h"}}}
@@ -113,7 +120,7 @@ func TestDeleteByPayload(t *testing.T) {
 	ctx := context.Background()
 	name := collection(t)
 	defer s.DeleteCollection(ctx, name)
-	if err := s.EnsureCollection(ctx, name, 8, ""); err != nil {
+	if _, err := s.EnsureCollection(ctx, name, 8, ""); err != nil {
 		t.Fatal(err)
 	}
 	err := s.Upsert(ctx, name, []Point{

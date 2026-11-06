@@ -20,6 +20,7 @@ import (
 	dbpkg "github.com/Below-Z3R0/argos/internal/db"
 	"github.com/Below-Z3R0/argos/internal/metrics"
 	"github.com/Below-Z3R0/argos/internal/registry"
+	"github.com/Below-Z3R0/argos/internal/resources"
 	"github.com/Below-Z3R0/argos/internal/sparse"
 	"github.com/Below-Z3R0/argos/internal/types"
 )
@@ -30,6 +31,8 @@ var (
 	ErrModelUnavailable = errors.New("model unavailable")
 	ErrStoreUnavailable = errors.New("store unavailable")
 )
+
+const ramHeadroomMB = 256
 
 // Embedder is the subset of the embedding model the engine uses.
 type Embedder interface {
@@ -117,6 +120,11 @@ type Engine struct {
 	rerankers map[string]Reranker
 	states    map[string]*ModelStatus
 	metrics   *metrics.Registry
+	// loadLocks deduplicates concurrent loads of the same model without
+	// holding e.mu during the expensive ONNX session creation.
+	loadLocks map[string]*sync.Mutex
+	// ramAvailable is injectable for tests; nil means read the host.
+	ramAvailable func() int
 	// use keeps a search from running while a model is being unloaded.
 	use sync.RWMutex
 }
@@ -133,15 +141,17 @@ type ModelStatus struct {
 // New creates an engine.
 func New(cfg config.Config, catalog *registry.Catalog, store Store, fact Factories) *Engine {
 	return &Engine{
-		cfg:       cfg,
-		catalog:   catalog,
-		store:     store,
-		fact:      fact,
-		dbs:       dbpkg.New(filepath.Join(cfg.Paths.Home, "dbs")),
-		embedders: map[string]Embedder{},
-		rerankers: map[string]Reranker{},
-		states:    map[string]*ModelStatus{},
-		metrics:   metrics.New(),
+		cfg:          cfg,
+		catalog:      catalog,
+		store:        store,
+		fact:         fact,
+		dbs:          dbpkg.New(filepath.Join(cfg.Paths.Home, "dbs")),
+		embedders:    map[string]Embedder{},
+		rerankers:    map[string]Reranker{},
+		states:       map[string]*ModelStatus{},
+		loadLocks:    map[string]*sync.Mutex{},
+		metrics:      metrics.New(),
+		ramAvailable: resources.AvailableRAMMB,
 	}
 }
 
@@ -417,9 +427,22 @@ type Status struct {
 func (e *Engine) Status(ctx context.Context) Status {
 	e.mu.Lock()
 	st := Status{Collection: e.cfg.Index.Collection, Model: e.cfg.Defaults.Embedding}
+	providers := map[string]bool{}
 	for k, v := range e.embedders {
 		st.Embedders = append(st.Embedders, k)
-		st.Provider = v.Provider()
+		providers[v.Provider()] = true
+	}
+	switch len(providers) {
+	case 1:
+		for provider := range providers {
+			st.Provider = provider
+		}
+	case 0:
+		// No embedder loaded yet.
+	default:
+		// Several models can be resident at once; a single top-level provider
+		// would be whichever map entry won the iteration.
+		st.Provider = "mixed"
 	}
 	for k := range e.rerankers {
 		st.Rerankers = append(st.Rerankers, k)
@@ -455,6 +478,110 @@ func (e *Engine) Load(ctx context.Context, kind string) error {
 	default:
 		return fmt.Errorf("modelo desconocido %q (embed|rerank|all)", kind)
 	}
+}
+
+// LoadModel preloads one catalogue entry. For embeddings it loads every
+// dimension used by a registered base, so a later `search --db` does not pay
+// the session cost; without a base it uses the model's effective dimensions.
+func (e *Engine) LoadModel(ctx context.Context, id string) error {
+	e.use.Lock()
+	defer e.use.Unlock()
+	m, err := e.catalog.Get(id)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	switch m.Task {
+	case registry.TaskEmbedding:
+		dims := e.dimsForModel(id, m)
+		for _, dim := range dims {
+			if _, err := e.embedderFor(Target{ModelID: id, Dims: dim}); err != nil {
+				return err
+			}
+		}
+		return nil
+	case registry.TaskReranker:
+		_, err := e.rerankerForID(id)
+		return err
+	default:
+		return fmt.Errorf("%w: %s no es embedding ni reranker", ErrInvalidRequest, id)
+	}
+}
+
+// UnloadModel closes only the sessions of one model. It is idempotent when the
+// model is not resident.
+func (e *Engine) UnloadModel(id string) error {
+	e.use.Lock()
+	defer e.use.Unlock()
+	m, err := e.catalog.Get(id)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidRequest, err)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if m.Task == registry.TaskEmbedding {
+		prefix := "embed:" + id + "/"
+		for key, emb := range e.embedders {
+			if !strings.HasPrefix(key, prefix) {
+				continue
+			}
+			if c, ok := emb.(interface{ Close() error }); ok {
+				_ = c.Close()
+			}
+			delete(e.embedders, key)
+			if st, ok := e.states[key]; ok {
+				st.State = "not_loaded"
+				st.Provider = ""
+				st.LoadMS = 0
+			}
+		}
+	} else {
+		key := "rerank:" + id
+		if rr, ok := e.rerankers[id]; ok {
+			if c, ok := rr.(interface{ Close() error }); ok {
+				_ = c.Close()
+			}
+			delete(e.rerankers, id)
+			if st, ok := e.states[key]; ok {
+				st.State = "not_loaded"
+				st.Provider = ""
+				st.LoadMS = 0
+			}
+		}
+	}
+	e.metrics.Set("argos_models_loaded", float64(len(e.embedders)), metrics.Labels{"kind": "embed"})
+	e.metrics.Set("argos_models_loaded", float64(len(e.rerankers)), metrics.Labels{"kind": "rerank"})
+	e.metrics.Inc("argos_model_unload_total", metrics.Labels{"model": id})
+	trimHeap()
+	return nil
+}
+
+func (e *Engine) dimsForModel(id string, m registry.Model) []int {
+	seen := map[int]bool{}
+	if list, err := e.dbs.List(); err == nil {
+		for _, meta := range list {
+			if meta.Model == id && meta.Dims > 0 {
+				seen[meta.Dims] = true
+			}
+		}
+	}
+	if id == e.cfg.Defaults.Embedding {
+		if e.cfg.Index.Dims > 0 {
+			seen[e.cfg.Index.Dims] = true
+		} else if d := m.EffectiveDims(); d > 0 {
+			seen[d] = true
+		}
+	}
+	if len(seen) == 0 {
+		if d := m.EffectiveDims(); d > 0 {
+			seen[d] = true
+		}
+	}
+	out := make([]int, 0, len(seen))
+	for d := range seen {
+		out = append(out, d)
+	}
+	sort.Ints(out)
+	return out
 }
 
 // Unload closes the sessions and frees their memory. A running search finishes
@@ -538,72 +665,149 @@ func (e *Engine) defaultDims() int {
 func (e *Engine) embedderFor(t Target) (Embedder, error) {
 	key := fmt.Sprintf("embed:%s/%d", t.ModelID, t.Dims)
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if emb, ok := e.embedders[key]; ok {
+		e.mu.Unlock()
+		return emb, nil
+	}
+	e.mu.Unlock()
+
+	// Slow path: one loader per model/dims. Different models can load
+	// concurrently, and Status keeps reporting "loading" while this runs.
+	lk := e.loadLockFor(key)
+	lk.Lock()
+	defer lk.Unlock()
+
+	e.mu.Lock()
+	if emb, ok := e.embedders[key]; ok {
+		e.mu.Unlock()
 		return emb, nil
 	}
 	state := &ModelStatus{Key: key, State: "loading"}
 	e.states[key] = state
+	e.mu.Unlock()
 	start := time.Now()
 
 	m, err := e.catalog.Get(t.ModelID)
 	if err == nil {
-		var emb Embedder
+		err = e.checkRAM(m)
+	}
+	var emb Embedder
+	if err == nil {
 		emb, err = e.fact.Embedder(m, t.Dims)
-		if err == nil {
-			e.embedders[key] = emb
-			state.State = "ready"
-			state.Provider = emb.Provider()
-			state.LoadMS = time.Since(start).Milliseconds()
-			e.metrics.Observe("argos_model_load_seconds", time.Since(start).Seconds(), metrics.Labels{"model": t.ModelID})
-			e.metrics.Inc("argos_model_load_total", metrics.Labels{"model": t.ModelID, "state": "ready"})
-			e.metrics.Set("argos_models_loaded", float64(len(e.embedders)), metrics.Labels{"kind": "embed"})
-			return emb, nil
+		if err == nil && emb == nil {
+			err = fmt.Errorf("modelo %s sin fábrica", t.ModelID)
 		}
 	}
-	state.State = "error"
-	state.Error = err.Error()
-	e.metrics.Inc("argos_model_load_total", metrics.Labels{"model": t.ModelID, "state": "error"})
+
+	e.mu.Lock()
 	if err == nil {
-		err = fmt.Errorf("modelo %s sin fábrica", t.ModelID)
+		e.embedders[key] = emb
+		state.State = "ready"
+		state.Provider = emb.Provider()
+		state.LoadMS = time.Since(start).Milliseconds()
+	} else {
+		state.State = "error"
+		state.Error = err.Error()
 	}
-	return nil, fmt.Errorf("%w: %v", ErrModelUnavailable, err)
+	loaded := len(e.embedders)
+	e.mu.Unlock()
+
+	if err != nil {
+		e.metrics.Inc("argos_model_load_total", metrics.Labels{"model": t.ModelID, "state": "error"})
+		return nil, fmt.Errorf("%w: %v", ErrModelUnavailable, err)
+	}
+	e.metrics.Observe("argos_model_load_seconds", time.Since(start).Seconds(), metrics.Labels{"model": t.ModelID})
+	e.metrics.Inc("argos_model_load_total", metrics.Labels{"model": t.ModelID, "state": "ready"})
+	e.metrics.Set("argos_models_loaded", float64(loaded), metrics.Labels{"kind": "embed"})
+	return emb, nil
 }
 
 func (e *Engine) rerankerFor() (Reranker, error) {
-	id := e.cfg.Defaults.Reranker
+	return e.rerankerForID(e.cfg.Defaults.Reranker)
+}
+
+func (e *Engine) rerankerForID(id string) (Reranker, error) {
 	key := "rerank:" + id
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if rr, ok := e.rerankers[id]; ok {
+		e.mu.Unlock()
+		return rr, nil
+	}
+	e.mu.Unlock()
+
+	lk := e.loadLockFor(key)
+	lk.Lock()
+	defer lk.Unlock()
+
+	e.mu.Lock()
+	if rr, ok := e.rerankers[id]; ok {
+		e.mu.Unlock()
 		return rr, nil
 	}
 	state := &ModelStatus{Key: key, State: "loading"}
 	e.states[key] = state
+	e.mu.Unlock()
 	start := time.Now()
 
 	m, err := e.catalog.Get(id)
 	if err == nil {
-		var rr Reranker
+		err = e.checkRAM(m)
+	}
+	var rr Reranker
+	if err == nil {
 		rr, err = e.fact.Reranker(m)
-		if err == nil {
-			e.rerankers[id] = rr
-			state.State = "ready"
-			state.Provider = rr.Provider()
-			state.LoadMS = time.Since(start).Milliseconds()
-			e.metrics.Observe("argos_model_load_seconds", time.Since(start).Seconds(), metrics.Labels{"model": id})
-			e.metrics.Inc("argos_model_load_total", metrics.Labels{"model": id, "state": "ready"})
-			e.metrics.Set("argos_models_loaded", float64(len(e.rerankers)), metrics.Labels{"kind": "rerank"})
-			return rr, nil
+		if err == nil && rr == nil {
+			err = fmt.Errorf("reranker %s sin fábrica", id)
 		}
 	}
-	state.State = "error"
-	state.Error = err.Error()
-	e.metrics.Inc("argos_model_load_total", metrics.Labels{"model": id, "state": "error"})
+
+	e.mu.Lock()
 	if err == nil {
-		err = fmt.Errorf("reranker %s sin fábrica", id)
+		e.rerankers[id] = rr
+		state.State = "ready"
+		state.Provider = rr.Provider()
+		state.LoadMS = time.Since(start).Milliseconds()
+	} else {
+		state.State = "error"
+		state.Error = err.Error()
 	}
-	return nil, fmt.Errorf("%w: %v", ErrModelUnavailable, err)
+	loaded := len(e.rerankers)
+	e.mu.Unlock()
+
+	if err != nil {
+		e.metrics.Inc("argos_model_load_total", metrics.Labels{"model": id, "state": "error"})
+		return nil, fmt.Errorf("%w: %v", ErrModelUnavailable, err)
+	}
+	e.metrics.Observe("argos_model_load_seconds", time.Since(start).Seconds(), metrics.Labels{"model": id})
+	e.metrics.Inc("argos_model_load_total", metrics.Labels{"model": id, "state": "ready"})
+	e.metrics.Set("argos_models_loaded", float64(loaded), metrics.Labels{"kind": "rerank"})
+	return rr, nil
+}
+
+func (e *Engine) loadLockFor(key string) *sync.Mutex {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	lk := e.loadLocks[key]
+	if lk == nil {
+		lk = &sync.Mutex{}
+		e.loadLocks[key] = lk
+	}
+	return lk
+}
+
+func (e *Engine) checkRAM(m registry.Model) error {
+	if m.Specs.RAMMB <= 0 {
+		return nil
+	}
+	available := 0
+	if e.ramAvailable != nil {
+		available = e.ramAvailable()
+	}
+	if available > 0 && m.Specs.RAMMB+ramHeadroomMB > available {
+		return fmt.Errorf("RAM insuficiente para %s: necesita %d MB + %d MB de margen y hay %d MB",
+			m.ID, m.Specs.RAMMB, ramHeadroomMB, available)
+	}
+	return nil
 }
 
 func toHits(in []types.Hit) []Hit {

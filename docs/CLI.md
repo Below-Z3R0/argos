@@ -1,212 +1,186 @@
-# CLI de Argos — referencia y cobertura
+# CLI de Argos — referencia
 
-Dos binarios: `argosctl` (operación) y `argosd` (servicio, sin subcomandos).
+Dos binarios: `argosctl` (operación) y `argosd` (servicio). `argos-mcp` expone el CLI por MCP.
 
-## Convenciones globales
+No hay flags globales (`--config`, `--json`, `--quiet`, etc.) en esta versión: cada subcomando declara
+sus propios flags. La configuración se resuelve por variables de entorno y
+`~/.config/argos/config.yaml`.
 
-| Flag | Efecto |
+## Variables de entorno
+
+| Variable | Efecto |
 |---|---|
-| `--config PATH` | Config alternativo (default `~/.config/argos/config.yaml`) |
-| `--data-dir PATH` | Bases y modelos (default `~/.local/share/argos`) |
-| `--json` | Salida máquina-legible en cualquier comando |
-| `--progress auto\|plain\|json` | Barra en TTY, líneas JSON si no hay TTY |
-| `--quiet` / `-q` | Solo errores |
-| `-v` / `--verbose` | Log de debug a stderr |
-| `--no-color` | Sin ANSI |
-| `--timeout DUR` | Corta la operación (default: sin límite en index, 30 s en red) |
+| `ARGOS_HOME` | Raíz de estado (`data/`, `models/`, `qdrant/`). |
+| `ARGOS_VAULT` | Corpus por defecto. |
+| `ARGOS_QDRANT_URL` | Endpoint gRPC (`host:port`). |
+| `ARGOS_SERVICE_URL` | URL de `argosd` para el fast path del CLI. |
+| `ARGOS_ORT_LIB` | `libonnxruntime.so` a usar. |
+| `ARGOS_LAYOUT_URL` / `ARGOS_LAYOUT` | Docling y modo `auto|always|never`. |
+| `XDG_CONFIG_HOME` | Dónde buscar `argos/config.yaml`. |
 
-Exit codes: `0` ok · `1` uso inválido · `2` entorno (Qdrant, modelo, disco) · `3` interrumpido · `4`
-datos inválidos (ruta inexistente, base corrupta).
+## init / paths
 
-## Comandos
-
-### Catálogo y modelos
-
-```
-argosctl models list            [--all] [--task embedding|reranker] [--json]
-argosctl models catalog         [--task embedding|reranker] [--tier T] [--sort ram|disk|name] [--json]
-argosctl models show <id>       [--json]
-argosctl models use [<id>]      [--task T] [--yes]   # sin id: elige de la lista
-argosctl models install <id>... [--yes] [--allow-unpinned]
-argosctl models remove <id>     [--force]
-argosctl models verify [<id>...]
-argosctl models sync            # mantenedor: resuelve URLs y fija sha256
-argosctl models update          # trae el catálogo remoto
-argosctl models path
+```text
+argosctl init [--home DIR] [--vault DIR] [--no-compose]
+argosctl paths
 ```
 
-- `list`: solo instalados, una línea por modelo.
-- `catalog`: **el catálogo completo con especificaciones**, para elegir. Incluye tier, params, dims,
-  RAM, disco, licencia, estado (instalado / default / no instalado) y el link oficial.
-- `show`: ficha completa de uno, incluida la lista de archivos y su hash.
-- `use`: instala si falta y lo deja por defecto (flujo en [`MODELS.md`](MODELS.md)).
+`init` crea las carpetas de estado, guarda la config y escribe el `.env` del compose cuando
+`paths.compose` existe.
 
-### Bases
+## Modelos
 
+```text
+argosctl models list     [--task embedding|reranker] [--all]
+argosctl models catalog  [--task embedding|reranker] [--tier TIER]
+argosctl models show     <id>
+argosctl models install  <id>... [--yes] [--allow-unpinned]
+argosctl models use      <id> [--yes] [--allow-unpinned]
+argosctl models remove   <id> [--force]
+argosctl models verify   [<id>...]
+argosctl models sync     [--all] [--from-store] [<id>...]
 ```
-argosctl db create <ruta> [--name N] [--model M]
-argosctl db list
-argosctl db info <N>
-argosctl db stats <N> [--json]
-argosctl db docs <N> [--offset N] [--limit N] [--json]
-argosctl db rm <N> --force
+
+- `list`: modelos instalados y estado de descarga; `--all` incluye los que faltan.
+- `catalog`: catálogo completo con specs, licencia y estado.
+- `show`: ficha de un modelo, archivos y hash.
+- `install`: descarga y verifica SHA-256; no cambia el default.
+- `use`: instala si falta y deja el modelo como default de su tarea. Escribe la config; el servicio
+  lo aplica al reiniciar o con `service load <modelo>`.
+- `remove`: rechaza modelos usados por una base o cargados en `argosd`, salvo `--force`.
+- `verify`: recalcula los hashes de los archivos instalados.
+- `sync`: comando de mantenedor; resuelve URLs, calcula SHA-256 y escribe el catálogo de usuario.
+
+No existen `models update` ni `models path`.
+
+## Config
+
+```text
+argosctl config path
+argosctl config list
+argosctl config get <clave>
+argosctl config set <clave> <valor>
+argosctl config reset <clave>
 ```
 
-`db create` crea `$ARGOS_HOME/dbs/<nombre>/` con `meta.json` y la colección `argos_<nombre>`.
-Si el nombre existe, agrega un sufijo aleatorio y reporta el nombre final. Con `index --db N` se usan
-el origen, el modelo y las dims de esa base.
+Claves soportadas: `paths.*`, `defaults.embedding`, `defaults.reranker`, `filters.*`,
+`chunking.*`, `qdrant.url`, `qdrant.rest_url`, `qdrant.snapshots_path`, `index.collection`,
+`index.dims`, `index.quantization`, `search.hybrid`, `layout.url`, `layout.mode`,
+`resources.mode`, `resources.devices.embed`, `resources.devices.rerank`, `resources.threads`,
+`resources.batch`.
 
-`info` responde lo que el plugin necesita para la ficha de la base: ruta origen, modelo, dims,
-generación, archivos, puntos, tamaño en disco, última corrida y errores.
+`config set index.dims auto` equivale a `config reset index.dims`: usa el default del catálogo.
+`reset` borra la clave del YAML crudo; no materializa el resto de los defaults.
 
-### Indexación
+## Indexación
 
-```
+```text
 argosctl index [--db NOMBRE] [--path P] [--full] [--dry-run] [--chunks]
                [--include .md,.pdf] [--exclude .png] [--exclude-dir .git]
                [--limit N] [--max-tokens N] [--min-tokens N] [--overlap N]
 ```
 
-- Incremental por defecto (hash + mtime); `--full` ignora el manifiesto.
-- `--path` indexa un archivo o directorio puntual con el mismo diff.
-- `--dry-run` informa altas, modificaciones y borrados sin tocar Qdrant.
-- `--limit` acota la corrida a los primeros N archivos (pruebas).
+- Incremental por defecto: si `mtime`, tamaño y modelo no cambiaron, no lee el archivo.
+- `--full` ignora el manifiesto y re-embebe; borra los puntos viejos después del upsert.
+- `--dry-run` informa el plan sin tocar Qdrant.
+- `--chunks` cuenta chunks con el tokenizer real del modelo.
+- `--db all` recorre todas las bases registradas.
+- No existen `--device`, `--threads` ni `--ram-limit`; el device y los threads salen de la config.
 
-### Búsqueda
+## Bases
 
+```text
+argosctl db create <ruta> [--name N] [--model M]
+argosctl db list
+argosctl db info <N>
+argosctl db stats <N> [--json]
+argosctl db docs <N> [--offset N] [--limit N] [--json]
+argosctl db reindex <N> [--new-model M]
+argosctl db rm <N> --force
 ```
+
+- `create`: el modelo debe estar instalado. Crea `meta.json` y la colección.
+- `info`: metadata + archivos/chunks del manifiesto. No consulta puntos reales en Qdrant.
+- `stats` / `docs`: leen el manifiesto; `--json` para consumo de máquina.
+- `reindex`: crea una generación nueva (`-v2`) y deja la vieja consultable; después hay que indexar
+  la nueva y retirar la vieja a mano.
+- `rm`: borra la colección y la metadata.
+
+## Búsqueda
+
+```text
 argosctl search "<q>" [--db NOMBRE|a,b|all] [--model M] [--exclude-db N]
                       [-k 20] [--max-per-file 2]
                       [--rerank auto|on|off] [--rerank-depth N]
-                      [--mode dense|hybrid] [--min-score F] [--json] [--explain]
+                      [--mode dense|hybrid] [--min-score F]
+                      [--filter k=v ...] [--json] [--explain] [--local]
 ```
 
-- `--db` elige la base; sin él usa la colección de la config.
+- `--db` elige base, lista o `all`; sin él usa `index.collection`.
+- `--local` no consulta `argosd`.
 - `--rerank auto` usa el reranker si está instalado; `on` falla si falta; `off` solo vectorial.
-- `--rerank-depth 0` rerankea todo el pool (`k × 3`).
-- `--json` devuelve `{query, collection, elapsed_ms, hits}`.
-- La búsqueda es híbrida por defecto (`search.hybrid: true`); `--mode dense` sirve para comparar y
-  depurar. Los scores híbridos son de fusión RRF (~0.016), así que `--min-score` todavía no está
-  calibrado; el CLI avisa cuando se combinan.
-- `eval --file testdata/eval.yaml --db N [--mode dense|hybrid]` mide recall@k y MRR contra el set.
-- `models list` separa `INSTALADO` (disco), `DEFAULT` y `MEMORIA` (consultado a `argosd`).
-- Si `service.url` responde, `search` va por `argosd` (modelos residentes, ~50 ms); si no, cae al
-  pipeline local (carga el modelo, ~3 s).
+- `--mode` vacío usa `search.hybrid`.
+- En híbrido el score es RRF (~0.0x), no coseno; `--min-score` no está calibrado.
+- `--json` devuelve el JSON del engine; `--explain` agrega tokens y chunk a la tabla.
+- No existe `--rerank-model`.
 
-Las bases son tablas independientes; se puede buscar en una o en varias.
+## Servicio
 
-| Invocación | Alcance |
-|---|---|
-| `search "x"` | La base default (`index.collection`) |
-| `search "x" --db learning` | Una sola tabla |
-| `search "x" --db learning,university` | Varias tablas explícitas |
-| `search "x" --db all --model qwen3-embed-0.6b` | Todas las que usan ese modelo |
-| `search "x" --db all --exclude-db borradores` | Todas menos una |
-
-Reglas:
-
-- `--db all` resuelve todas las bases y fusiona por rango (RRF); funciona con modelos distintos
-  porque compara posiciones, no scores.
-- `--db all` funciona sin `argosd`; el CLI carga los modelos y usa el mismo engine. Es más lento
-  que el servicio, pero no requiere daemon.
-- `--db a,b` y `--model`/`--exclude-db` se resuelven con el mismo selector en CLI y servicio.
-- Si el selector queda vacío, el comando devuelve error con el detalle.
-- `--explain` agrega tokens y posición del chunk a la tabla; el JSON ya trae `db` por hit.
-
-### Recursos y entorno
-
-```
-argosctl gpu list                 [--json]
-argosctl resources show           [--json]      # límites del contenedor + consumo
-argosctl resources set            [--cpus N] [--memory 2g] [--pids N] [--device /dev/dri]
-                                  [--mode auto|cpu|gpu|mixed] [--threads N]
-                                  [--gpu ID|auto]
-argosctl doctor                   [--json]
+```text
 argosctl service status
-argosctl service load  [embed|rerank|all]
-argosctl service unload [embed|rerank|all]
-argosctl snapshot create|list [--db N]
-argosctl snapshot delete|restore <nombre> [--db N]
-argosctl init                     # crea ${ARGOS_HOME} y el .env del stack
-argosctl paths                    [--json]
+argosctl service load  [embed|rerank|all|<modelo>]
+argosctl service unload [embed|rerank|all|<modelo>]
 ```
 
-- `resources set` escribe la config (no hace falta editar YAML a mano).
-- `doctor` verifica Qdrant, colecciones, modelo default instalado y con hash correcto, threads
-  efectivos, RAM disponible y GPUs.
-- `status` no existe como comando suelto: el estado del servicio se consulta con `service status`.
+`service load <modelo>` precarga todas las dimensiones que usan las bases registradas para ese
+modelo. `service unload <modelo>` libera solo esas sesiones. `embed|rerank|all` operan por tarea.
 
-### Servicio
+`argosd` se levanta aparte:
 
-```
-argosctl service status           # modelos cargados, provider y /v1/status
-argosctl service load  [embed|rerank|all]
-argosctl service unload [embed|rerank|all]
+```text
+argosd --addr 127.0.0.1:7712 [--preload none|embed|rerank|all|<modelo>]
 ```
 
-El daemon es el binario `argosd` (no un subcomando): `argosd --addr 127.0.0.1:7712`.
+## Snapshots
 
-### Utilidades
-
+```text
+argosctl snapshot create  [--db N]
+argosctl snapshot list    [--db N]
+argosctl snapshot delete  <nombre> [--db N]
+argosctl snapshot restore <nombre> [--db N]
 ```
+
+## Eval
+
+```text
+argosctl eval [--db N] [--k 8] [--file testdata/eval.yaml] [--rerank auto|on|off] [--mode dense|hybrid]
+```
+
+Requiere `argosd`; mide recall@k y MRR contra el set de consultas.
+
+## Doctor
+
+```text
+argosctl doctor
+```
+
+Verifica config, rutas, catálogo, modelos default instalados, Qdrant, Docling opcional, EPs de ORT,
+GPUs y Docker. No tiene `--json`. No verifica hashes de modelos, RAM disponible ni threads efectivos.
+
+## Utilidades
+
+```text
 argosctl version
 argosctl completion bash|zsh|fish
-argosctl config path|list|get <k>|set <k> <v>|reset <k>
 ```
 
-`config reset <clave>` borra la clave del YAML y vuelve al default del código. `config set index.dims auto`
-equivale a `reset index.dims`: el tamaño sale del catálogo (512 para Qwen3, 768 para e5, 1024 para bge-m3).
+## Exit codes
 
-Claves de despliegue: `qdrant.url` (gRPC), `qdrant.rest_url` (REST, default `http://<host>:6333`),
-`qdrant.snapshots_path` (ruta dentro del contenedor, default `/qdrant/snapshots`) y `search.hybrid`.
-
-## Matriz de cobertura
-
-| Necesidad | Comando | Estado |
-|---|---|---|
-| Crear base apuntando a una carpeta | `db create <ruta>` | cubierto |
-| Base por carpeta con colección propia | `db create` + `index --db` | **agregado** |
-| Nombre por defecto = carpeta, colisión con sufijo | `db create` | cubierto |
-| Elegir modelo al crear | `db create --model` | cubierto |
-| Ver todas las bases | `db list` | cubierto |
-| Ver tamaño y contenido de una base | `db info`, `db stats` | implementado |
-| Listar documentos/chunks (plugin) | `db docs` | implementado |
-| Borrar base | `db rm` | cubierto |
-| Reindexar todo o parte | `index --full`, `index --path` | cubierto |
-| Solo archivos nuevos | diff automático | cubierto |
-| Cambiar de modelo | `models use` + `db reindex --new-model` | cubierto |
-| Ver catálogo con specs para elegir | `models catalog` | **agregado** |
-| Instalar / quitar modelo | `models install/remove` | cubierto |
-| Buscar en una base (single table) | `search --db N` | cubierto |
-| Buscar en varias tablas | `search --db a,b` | cubierto |
-| Buscar en todas | `search --db all` | implementado |
-| Buscar solo las bases de un modelo | `search --model ID` | **agregado** |
-| Excluir una base de la búsqueda | `--exclude-db` | **agregado** |
-| Reordenar por relevancia real | `--rerank auto` (default) | **agregado** |
-| Cambiar el reranker sin tocar el embedder | `models use <id-reranker>` (task sale del catálogo) o `models use --task reranker` | **agregado** |
-| Usar otro reranker solo en una consulta | `search --rerank-model ID` | **agregado** |
-| Ajustar costo/latencia del rerank | `--rerank-depth` | **agregado** |
-| Elegir GPU/CPU por corrida | `index --device` | **agregado** |
-| Limitar hilos y RAM | `index --threads/--ram-limit`, `resources set` | **agregado** |
-| Ver GPUs detectadas | `gpu list` | cubierto |
-| Ver progreso y porcentaje | `--progress`, SSE | cubierto |
-| Ver estado del servicio | `service status` | **agregado** |
-| Mover el estado a otro disco | `config set paths.home` + `init` | **agregado** |
-| Ver/crear las rutas del stack | `paths`, `init` | **agregado** |
-| Limitar CPU/RAM del contenedor | `resources set --cpus/--memory` | **agregado** |
-| Editar config sin YAML | `config set`, `resources set` | **agregado** |
-| Autocompletado en fish | `completion fish` | implementado |
-| Ver qué archivos entrarían | `index --dry-run` | **agregado** |
-| Contar chunks con el tokenizer real | `index --dry-run --chunks` | **agregado** |
-| Incluir/excluir tipos de archivo | `--include/--exclude` + `config set filters.*` | **agregado** |
-| Versión para soporte | `version` | **agregado** |
-
-## Huecos que quedaron fuera (a propósito)
-
-| Cosa | Por qué no ahora |
+| Código | Significado |
 |---|---|
-| `db rename` | Renombrar implica mover colección y manifiesto; se hace cuando haya demanda real |
-| `index --watch` | `fsnotify` agrega un modo de ejecución permanente; está en el roadmap |
-| `db export/import` | El índice es derivado: se reconstruye, no se exporta |
-| `search --rerank` | Depende del reranker, que es una fase posterior |
-| Autenticación | El servicio vive en loopback; se agrega si sale de ahí |
+| `0` | OK |
+| `1` | Uso inválido |
+| `2` | Error de entorno, modelo, datos o Qdrant |
+
+Los códigos `3` (interrumpido), `4` (datos inválidos) y `5` (job falló) **no están implementados**
+en esta versión.

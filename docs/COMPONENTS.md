@@ -15,7 +15,7 @@ Mapa de paquetes, responsabilidades y reglas de dependencia. El detalle de compo
 └───────────────┬──────────────┘  └────────────┬───────────────┘
                 │                              │
 ┌───────────────▼──────────────┬───────────────▼───────────────┐
-│ internal/search              │ internal/ingest               │
+│ internal/service             │ internal/ingest               │
 └───────┬──────────┬───────────┴───────┬──────────┬────────────┘
         │          │                   │          │
 ┌───────▼───┐ ┌────▼─────┐ ┌───────────▼──┐ ┌─────▼─────┐
@@ -57,7 +57,7 @@ dominio importa `cmd`; `api` y `mcp` no contienen lógica, solo traducción.
 | `internal/store/qdranttest` | Doble en memoria para tests sin Qdrant | `Store` | types |
 | `internal/manifest` | bbolt por base: archivo → hash, mtime, ids, generación; transacciones | `Manifest` | types, config |
 | `internal/ingest` | Diff, plan, workers, backpressure, journal, reanudación, dry-run | `Run`, `Plan` | casi todo lo anterior |
-| `internal/search` | Embebe la consulta, fan-out por base/modelo, RRF, dedupe, filtros | `Search` | types, embed, store, db |
+| `internal/service` | Embebe la consulta, fan-out por base/modelo, RRF, dedupe, filtros | `Search` | types, embed, store, db |
 | `internal/jobs` | Jobs de indexación en background: estado, progreso, cancelación | `Manager` | ingest, progress |
 | `internal/api` | REST + SSE; validación de request; mapeo de errores | `NewServer` | search, jobs, db |
 | `internal/mcp` | Tools MCP sobre los mismos servicios | `Register` | search, jobs, db |

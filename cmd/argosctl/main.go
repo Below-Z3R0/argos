@@ -36,7 +36,6 @@ import (
 	"github.com/Below-Z3R0/argos/internal/registry"
 	"github.com/Below-Z3R0/argos/internal/rerank"
 	"github.com/Below-Z3R0/argos/internal/resources"
-	"github.com/Below-Z3R0/argos/internal/search"
 	"github.com/Below-Z3R0/argos/internal/service"
 	qstore "github.com/Below-Z3R0/argos/internal/store/qdrant"
 	"github.com/Below-Z3R0/argos/internal/vault"
@@ -122,7 +121,7 @@ Comandos:
   index       --dry-run: qué archivos entrarían con los filtros actuales
   db          crea y administra bases independientes (create|list|info|rm)
   search      busca en una base (con reranker opcional)
-  service     estado y carga/descarga de modelos en argosd (status|load|unload)
+  service     estado y carga/descarga de modelos en argosd (status|load|unload [embed|rerank|all|<modelo>])
   snapshot    crea, lista, borra o restaura snapshots de una base
   completion  script de autocompletado (bash|zsh|fish)
   eval        mide recall@k/MRR contra un set de consultas
@@ -388,12 +387,12 @@ func modelsCatalog(args []string) error {
 	if err != nil {
 		return err
 	}
-	store, _, err := newStore()
+	store, cfg, err := newStore()
 	if err != nil {
 		return err
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "TIER\tID\tPARAMS\tDIMS/CAPAS\tRAM\tDISCO\tLICENCIA\tINSTALADO\tDEFAULT")
+	fmt.Fprintln(w, "TIER	ID	PARAMS	DIMS/CAPAS	RAM	DISCO	LICENCIA	INSTALADO	DEFAULT")
 	for _, m := range cat.ByTask(t) {
 		if *tier != "" && m.Tier != *tier {
 			continue
@@ -415,10 +414,11 @@ func modelsCatalog(args []string) error {
 			installed = "no"
 		}
 		def := "—"
-		if m.Default {
+		if (m.Task == registry.TaskEmbedding && cfg.Defaults.Embedding == m.ID) ||
+			(m.Task == registry.TaskReranker && cfg.Defaults.Reranker == m.ID) {
 			def = "sí"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d MB\t%d MB\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s	%s	%s	%s	%d MB	%d MB	%s	%s	%s\n",
 			label, m.ID, m.Specs.Params, size, m.Specs.RAMMB, m.Specs.DiskMB, m.License, installed, def)
 	}
 	w.Flush()
@@ -566,6 +566,11 @@ func modelsInstall(args []string, use bool) error {
 		if err := cfg.Save(cfgPath); err != nil {
 			return err
 		}
+		if catModelTask(cat, fs.Arg(0)) == registry.TaskEmbedding {
+			if m, err := cat.Get(cfg.Defaults.Embedding); err == nil {
+				warnDefaultDims(cfg, effectiveDims(m, cfg.Index.Dims))
+			}
+		}
 		fmt.Printf("default %s: %s\n", catModelTask(cat, fs.Arg(0)), fs.Arg(0))
 	}
 	return nil
@@ -615,6 +620,19 @@ func modelsRemove(args []string) error {
 		(m.Task == registry.TaskReranker && cfg.Defaults.Reranker == m.ID)
 	if isDefault && !*force {
 		return fmt.Errorf("%s es el default de %s; usá otro modelo o --force", m.ID, m.Task)
+	}
+	if !*force {
+		mgr := dbpkg.New(filepath.Join(cfg.Paths.Home, "dbs"))
+		if list, err := mgr.List(); err == nil {
+			for _, meta := range list {
+				if meta.Model == m.ID {
+					return fmt.Errorf("%s lo usa la base %s; cambiala o usá --force", m.ID, meta.Name)
+				}
+			}
+		}
+		if state, ok := memoryStates(cfg)[m.ID]; ok {
+			return fmt.Errorf("%s está cargado en argosd (%s); usá service unload %s o --force", m.ID, state, m.ID)
+		}
 	}
 	store, _, err := newStore()
 	if err != nil {
@@ -1408,18 +1426,6 @@ func runIndex(cfg config.Config, files []vault.File, chunkCfg config.Chunking, f
 	if _, ok := modelStore.Status(m.Task, m.ID); !ok {
 		return fmt.Errorf("%s no está instalado (argosctl models install %s)", m.ID, m.ID)
 	}
-	tk, err := tokenizers.FromFile(filepath.Join(dir, "tokenizer.json"))
-	if err != nil {
-		return fmt.Errorf("tokenizer de %s: %w", m.ID, err)
-	}
-	defer tk.Close()
-	counter := func(text string) int {
-		enc, err := tk.EncodeWithOptionsErr(text, true)
-		if err != nil {
-			return len(strings.Fields(text))
-		}
-		return len(enc.IDs)
-	}
 
 	warnTruncation(m, cfg.Index.Dims)
 	emb, err := embed.NewORT(embed.ORTOptions{
@@ -1441,6 +1447,13 @@ func runIndex(cfg config.Config, files []vault.File, chunkCfg config.Chunking, f
 		return err
 	}
 	defer emb.Close()
+
+	counter := func(text string) int {
+		if n := emb.CountTokens(text); n > 0 {
+			return n
+		}
+		return len(strings.Fields(text))
+	}
 
 	host, portStr, err := net.SplitHostPort(cfg.Qdrant.URL)
 	if err != nil {
@@ -1522,6 +1535,36 @@ func warnTruncation(m registry.Model, dims int) {
 	if dims > 0 && dims < m.Specs.Dims && !m.Specs.MRL {
 		fmt.Fprintf(os.Stderr, "aviso: %s no es MRL; truncar de %d a %d dims pierde más calidad de la esperada\n",
 			m.ID, m.Specs.Dims, dims)
+	}
+}
+
+// warnDefaultDims catches the common case after `models use`: the default
+// collection was built with another model/dimension, so a plain `search`
+// without --db will fail even though the model itself is fine.
+func warnDefaultDims(cfg config.Config, dims int) {
+	if dims <= 0 {
+		return
+	}
+	host, portStr, err := net.SplitHostPort(cfg.Qdrant.URL)
+	if err != nil {
+		return
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return
+	}
+	st, err := qstore.NewWithREST(host, port, cfg.Qdrant.RESTURL, cfg.Qdrant.SnapshotsPath)
+	if err != nil {
+		return
+	}
+	defer st.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	got, err := st.CollectionDim(ctx, cfg.Index.Collection)
+	if err == nil && got != 0 && got != dims {
+		fmt.Fprintf(os.Stderr, "aviso: la colección default %s usa %d dims y el nuevo default usa %d; "+
+			"buscá con --db o creá una base nueva (db reindex)\n",
+			cfg.Index.Collection, got, dims)
 	}
 }
 
@@ -1725,6 +1768,10 @@ func dbCreate(cfg config.Config, mgr *dbpkg.Manager, args []string) error {
 	if err != nil {
 		return err
 	}
+	modelStore := models.New(filepath.Join(cfg.Paths.Home, "models"))
+	if _, ok := modelStore.Status(m.Task, m.ID); !ok {
+		return fmt.Errorf("%s no está instalado (argosctl models install %s)", m.ID, m.ID)
+	}
 	dims := effectiveDims(m, cfg.Index.Dims)
 	warnTruncation(m, dims)
 	meta, err := mgr.Create(dbpkg.Meta{
@@ -1753,7 +1800,7 @@ func dbCreate(cfg config.Config, mgr *dbpkg.Manager, args []string) error {
 	defer st.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := st.EnsureCollection(ctx, meta.Collection, meta.Dims, meta.Quantization); err != nil {
+	if _, err := st.EnsureCollection(ctx, meta.Collection, meta.Dims, meta.Quantization); err != nil {
 		_ = mgr.Remove(meta.Name)
 		return err
 	}
@@ -1882,6 +1929,7 @@ func cmdSearch(args []string) error {
 	rerankDepth := fs.Int("rerank-depth", 0, "candidatos que pasan por el reranker (0 = pool)")
 	asJSON := fs.Bool("json", false, "salida JSON")
 	explain := fs.Bool("explain", false, "incluye tokens y posición del chunk")
+	localOnly := fs.Bool("local", false, "no usar argosd; corre el pipeline local")
 	filter := newKVFlag()
 	fs.Var(filter, "filter", "filtro payload k=v (repetible)")
 	// Accept the query before the flags: `search "x" --db y` is what people
@@ -1921,167 +1969,15 @@ func cmdSearch(args []string) error {
 	if *minScore > 0 && hybridEnabled(cfg, *mode) {
 		fmt.Fprintln(os.Stderr, "aviso: en modo híbrido el score es RRF (~0.0x), no es comparable con coseno; --min-score necesita calibración")
 	}
-	// Fast path: the resident service already has the models loaded.
-	if cfg.Service.URL != "" {
+	// Fast path: the resident service already has the models loaded. --local
+	// forces the process-local pipeline, which is also the MCP fallback path.
+	if !*localOnly && cfg.Service.URL != "" {
 		if done, err := searchViaService(cfg, *dbName, *modelFilter, *excludeDB, query, *k, *maxPerFile, *minScore, *rerankMode, *mode, *rerankDepth, *asJSON, *explain, filter.Map()); done {
 			return err
 		}
 	}
-	multi := *dbName == "all" || strings.Contains(*dbName, ",") || *modelFilter != "" || *excludeDB != ""
-	if multi {
-		return localEngineSearch(cfg, *dbName, *modelFilter, *excludeDB, query, *k, *maxPerFile, *minScore, *rerankMode, *mode, *rerankDepth, *asJSON, *explain, filter.Map())
-	}
-
-	modelID := cfg.Defaults.Embedding
-	collection := cfg.Index.Collection
-	dims := cfg.Index.Dims
-	if *dbName != "" && *dbName != "all" {
-		mgr := dbpkg.New(filepath.Join(cfg.Paths.Home, "dbs"))
-		meta, err := mgr.Get(*dbName)
-		if err != nil {
-			return err
-		}
-		modelID = meta.Model
-		collection = meta.Collection
-		dims = meta.Dims
-	}
-
-	cat, err := openCatalog()
-	if err != nil {
-		return err
-	}
-	m, err := cat.Get(modelID)
-	if err != nil {
-		return err
-	}
-	modelStore := models.New(filepath.Join(cfg.Paths.Home, "models"))
-	dir, err := modelStore.Dir(m.Task, m.ID)
-	if err != nil {
-		return err
-	}
-	if _, ok := modelStore.Status(m.Task, m.ID); !ok {
-		return fmt.Errorf("%s no está instalado (argosctl models install %s)", m.ID, m.ID)
-	}
-	emb, err := embed.NewORT(embed.ORTOptions{
-		ModelPath:     filepath.Join(dir, "model.onnx"),
-		TokenizerPath: filepath.Join(dir, "tokenizer.json"),
-		LibraryPath:   ortLib(cfg),
-		Name:          m.ID,
-		Dims:          effectiveDims(m, dims),
-		MaxTokens:     m.Specs.MaxTokens,
-		Pooling:       m.Specs.Pooling,
-		QueryInstruct: m.QueryInstruction,
-		Prefixes:      m.Prefixes,
-		Threads:       cfg.Resources.Threads,
-		Device:        cfg.Resources.Devices.Embed,
-		GPUIndex:      -1,
-	})
-	if err != nil {
-		return err
-	}
-	defer emb.Close()
-
-	host, portStr, err := net.SplitHostPort(cfg.Qdrant.URL)
-	if err != nil {
-		return err
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		return err
-	}
-	st, err := qstore.NewWithREST(host, port, cfg.Qdrant.RESTURL, cfg.Qdrant.SnapshotsPath)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
-
-	searcher := search.Searcher{
-		Embedder:    emb,
-		Store:       st,
-		Collection:  collection,
-		K:           *k,
-		MaxPerFile:  *maxPerFile,
-		MinScore:    *minScore,
-		RerankDepth: *rerankDepth,
-		Filter:      filter.Map(),
-		Hybrid:      hybridEnabled(cfg, *mode),
-	}
-
-	useRerank := *rerankMode == "on"
-	if *rerankMode == "auto" {
-		useRerank = true // only if the model is installed; checked below
-	}
-	if useRerank {
-		rm, err := cat.Get(cfg.Defaults.Reranker)
-		if err != nil {
-			return err
-		}
-		rdir, err := modelStore.Dir(rm.Task, rm.ID)
-		if err != nil {
-			return err
-		}
-		if _, ok := modelStore.Status(rm.Task, rm.ID); !ok {
-			if *rerankMode == "on" {
-				return fmt.Errorf("%s no está instalado (argosctl models install %s)", rm.ID, rm.ID)
-			}
-		} else {
-			rr, err := rerank.New(rerank.Options{
-				ModelPath:     filepath.Join(rdir, "model.onnx"),
-				TokenizerPath: filepath.Join(rdir, "tokenizer.json"),
-				LibraryPath:   ortLib(cfg),
-				Device:        cfg.Resources.Devices.Rerank,
-				GPUIndex:      -1,
-				Threads:       cfg.Resources.Threads,
-				Format:        rm.RerankFormat,
-				Instruction:   rm.QueryInstruction,
-			})
-			if err != nil {
-				return err
-			}
-			defer rr.Close()
-			searcher.Reranker = rr
-		}
-	}
-
-	start := time.Now()
-	results, err := searcher.Search(context.Background(), query)
-	if err != nil {
-		return err
-	}
-	elapsed := time.Since(start)
-
-	if *asJSON {
-		data, err := json.MarshalIndent(map[string]any{
-			"query": query, "collection": collection,
-			"elapsed_ms": elapsed.Milliseconds(), "hits": results,
-		}, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Println(string(data))
-		return nil
-	}
-
-	if len(results) == 0 {
-		fmt.Println("(sin resultados)")
-		return nil
-	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	if *explain {
-		fmt.Fprintln(w, "SCORE\tTOKENS\tCHUNK\tARCHIVO\tSECCIÓN")
-	} else {
-		fmt.Fprintln(w, "SCORE\tARCHIVO\tSECCIÓN")
-	}
-	for _, r := range results {
-		if *explain {
-			fmt.Fprintf(w, "%.3f\t%d\t%d\t%s\t%s\n", r.Score, r.Tokens, r.ChunkIndex, r.Path, truncate(r.Heading, 70))
-			continue
-		}
-		fmt.Fprintf(w, "%.3f\t%s\t%s\n", r.Score, r.Path, truncate(r.Heading, 70))
-	}
-	w.Flush()
-	fmt.Printf("\n%d resultados en %d ms (%s)\n", len(results), elapsed.Milliseconds(), collection)
-	return nil
+	return localEngineSearch(cfg, *dbName, *modelFilter, *excludeDB, query, *k, *maxPerFile,
+		*minScore, *rerankMode, *mode, *rerankDepth, *asJSON, *explain, filter.Map())
 }
 
 func truncate(s string, n int) string {
@@ -2254,6 +2150,7 @@ func searchViaService(cfg config.Config, db, modelFilter, excludeDB, query strin
 		return true, nil
 	}
 	var out struct {
+		DB         string   `json:"db"`
 		Collection string   `json:"collection"`
 		Mode       string   `json:"mode"`
 		ElapsedMS  int64    `json:"elapsed_ms"`
@@ -2273,7 +2170,7 @@ func searchViaService(cfg config.Config, db, modelFilter, excludeDB, query strin
 	for _, w := range out.Warnings {
 		fmt.Fprintln(os.Stderr, "aviso:", w)
 	}
-	showDB := db == "all"
+	showDB := out.DB == "all"
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	switch {
 	case explain && showDB:
@@ -2324,7 +2221,7 @@ func (f kvFlag) Map() map[string]string { return map[string]string(f) }
 
 func cmdService(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%w: service <status|load|unload>", errUsage)
+		return fmt.Errorf("%w: service <status|load|unload> [embed|rerank|all|<modelo>]", errUsage)
 	}
 	cfg, _, err := loadConfig()
 	if err != nil {
@@ -2336,12 +2233,16 @@ func cmdService(args []string) error {
 	base := strings.TrimSuffix(cfg.Service.URL, "/")
 
 	if args[0] == "status" {
-		resp, err := http.Get(base + "/v1/status")
+		client := &http.Client{Timeout: 10 * time.Second}
+		resp, err := client.Get(base + "/v1/status")
 		if err != nil {
 			return fmt.Errorf("argosd no responde en %s: %w", base, err)
 		}
 		defer resp.Body.Close()
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("argosd: %s: %s", resp.Status, strings.TrimSpace(string(raw)))
+		}
 		var pretty any
 		if json.Unmarshal(raw, &pretty) == nil {
 			out, _ := json.MarshalIndent(pretty, "", "  ")
@@ -2360,7 +2261,8 @@ func cmdService(args []string) error {
 		kind = args[1]
 	}
 	body, _ := json.Marshal(map[string]string{"model": kind})
-	resp, err := http.Post(base+"/v1/models/"+args[0], "application/json", strings.NewReader(string(body)))
+	client := &http.Client{Timeout: 6 * time.Minute}
+	resp, err := client.Post(base+"/v1/models/"+args[0], "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		return fmt.Errorf("argosd no responde en %s: %w", base, err)
 	}
@@ -2740,6 +2642,11 @@ func dbReindex(cfg config.Config, mgr *dbpkg.Manager, args []string) error {
 	dims := meta.Dims
 	if model != meta.Model {
 		dims = effectiveDims(m, cfg.Index.Dims)
+		warnTruncation(m, dims)
+	}
+	modelStore := models.New(filepath.Join(cfg.Paths.Home, "models"))
+	if _, ok := modelStore.Status(m.Task, m.ID); !ok {
+		return fmt.Errorf("%s no está instalado (argosctl models install %s)", m.ID, m.ID)
 	}
 	// New generation: a fresh base over the same source, so the old index
 	// stays searchable until the new one finishes.
@@ -2861,7 +2768,8 @@ func cmdEval(args []string) error {
 
 func rankOf(cfg config.Config, db, query, wantPath string, k int, rerank, mode string) (int, error) {
 	body, _ := json.Marshal(map[string]any{"query": query, "db": db, "k": k, "rerank": rerank, "mode": mode, "max_per_file": 1})
-	resp, err := http.Post(strings.TrimSuffix(cfg.Service.URL, "/")+"/v1/search", "application/json", strings.NewReader(string(body)))
+	client := &http.Client{Timeout: 3 * time.Minute}
+	resp, err := client.Post(strings.TrimSuffix(cfg.Service.URL, "/")+"/v1/search", "application/json", strings.NewReader(string(body)))
 	if err != nil {
 		return 0, err
 	}

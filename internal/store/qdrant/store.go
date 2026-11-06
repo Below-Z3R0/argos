@@ -66,25 +66,25 @@ func (s *Store) Close() error { return s.client.Close() }
 // EnsureCollection creates the collection when it does not exist and verifies
 // that an existing one uses the same dimension. Mixing dimensions in one
 // collection is not something Qdrant can recover from, so it fails loudly.
-func (s *Store) EnsureCollection(ctx context.Context, name string, dim int, quantization string) error {
+func (s *Store) EnsureCollection(ctx context.Context, name string, dim int, quantization string) (bool, error) {
 	info, err := s.client.GetCollectionsClient().Get(ctx, &qdrant.GetCollectionInfoRequest{CollectionName: name})
 	if err == nil {
 		params := info.GetResult().GetConfig().GetParams()
 		vectors := params.GetVectorsConfig().GetParamsMap().GetMap()
 		dense, ok := vectors["dense"]
 		if !ok {
-			return fmt.Errorf("qdrant: collection %s uses the old unnamed schema; drop it or use another collection (index.collection)", name)
+			return false, fmt.Errorf("qdrant: collection %s uses the old unnamed schema; drop it or use another collection (index.collection)", name)
 		}
 		if size := int(dense.GetSize()); size != 0 && size != dim {
-			return fmt.Errorf("qdrant: collection %s has %d dims, this index uses %d; use another collection (index.collection)", name, size, dim)
+			return false, fmt.Errorf("qdrant: collection %s has %d dims, this index uses %d; use another collection (index.collection)", name, size, dim)
 		}
 		if params.GetSparseVectorsConfig().GetMap()["sparse"] == nil {
-			return fmt.Errorf("qdrant: collection %s has no sparse vector; use another collection (index.collection)", name)
+			return false, fmt.Errorf("qdrant: collection %s has no sparse vector; use another collection (index.collection)", name)
 		}
-		return nil
+		return false, nil
 	}
 	if status.Code(err) != codes.NotFound {
-		return fmt.Errorf("qdrant: collection %s: %w", name, err)
+		return false, fmt.Errorf("qdrant: collection %s: %w", name, err)
 	}
 
 	create := &qdrant.CreateCollection{
@@ -106,9 +106,9 @@ func (s *Store) EnsureCollection(ctx context.Context, name string, dim int, quan
 		}
 	}
 	if err := s.client.CreateCollection(ctx, create); err != nil {
-		return fmt.Errorf("qdrant: create %s: %w", name, err)
+		return false, fmt.Errorf("qdrant: create %s: %w", name, err)
 	}
-	return nil
+	return true, nil
 }
 
 // Health reports whether the server answers, regardless of collections.

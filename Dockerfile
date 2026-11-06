@@ -1,4 +1,6 @@
 # syntax=docker/dockerfile:1.7
+# LEGACY: unified image (old CI). Current path is docker/app.Dockerfile over a
+# published b3l0w-ort base; Makefile no longer builds this file.
 
 # --- build ------------------------------------------------------------------
 FROM golang:1.27-bookworm AS build

@@ -50,8 +50,10 @@ type fakeStore struct {
 
 func newFakeStore() *fakeStore { return &fakeStore{points: map[string]types.Point{}} }
 
-func (f *fakeStore) EnsureCollection(context.Context, string, int, string) error { return nil }
-func (f *fakeStore) EnsurePayloadIndexes(context.Context, string) error          { return nil }
+func (f *fakeStore) EnsureCollection(context.Context, string, int, string) (bool, error) {
+	return true, nil
+}
+func (f *fakeStore) EnsurePayloadIndexes(context.Context, string) error { return nil }
 func (f *fakeStore) UpsertWithWait(_ context.Context, _ string, points []types.Point, _ bool) error {
 	for _, p := range points {
 		f.points[p.ID] = p

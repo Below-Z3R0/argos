@@ -26,9 +26,10 @@ func (f *fakeEngine) Metrics() string { return "argos_search_total 1\n" }
 
 func (f *fakeEngine) Ready(context.Context) error { return nil }
 
-func (f *fakeEngine) Load(context.Context, string) error { return nil }
-
-func (f *fakeEngine) Unload(string) {}
+func (f *fakeEngine) Load(context.Context, string) error      { return nil }
+func (f *fakeEngine) LoadModel(context.Context, string) error { return nil }
+func (f *fakeEngine) Unload(string)                           {}
+func (f *fakeEngine) UnloadModel(string) error                { return nil }
 
 func TestSearchOK(t *testing.T) {
 	fe := &fakeEngine{}

@@ -41,6 +41,7 @@ func Register(s *mcp.Server, d Deps) {
 		if d.Daemon != nil {
 			raw, err := d.Daemon.Search(ctx, map[string]any{
 				"query": in.Query, "db": in.DB, "k": in.K,
+				"model": in.Model, "exclude_dbs": in.ExcludeDBs,
 				"max_per_file": in.MaxPerFile, "min_score": in.MinScore,
 				"rerank": in.Rerank, "mode": in.Mode, "rerank_depth": in.RerankDepth,
 				"filter": in.Filter,
@@ -50,9 +51,15 @@ func Register(s *mcp.Server, d Deps) {
 				return text(string(raw)), nil, nil
 			}
 		}
-		args := []string{"search", in.Query, "--json"}
+		args := []string{"search", in.Query, "--json", "--local"}
 		if in.DB != "" {
 			args = append(args, "--db", in.DB)
+		}
+		if in.Model != "" {
+			args = append(args, "--model", in.Model)
+		}
+		if len(in.ExcludeDBs) > 0 {
+			args = append(args, "--exclude-db", strings.Join(in.ExcludeDBs, ","))
 		}
 		if in.K > 0 {
 			args = append(args, "--k", fmt.Sprint(in.K))
@@ -138,7 +145,7 @@ func Register(s *mcp.Server, d Deps) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "models_load",
-		Description: "Carga en memoria embed, rerank o all sin esperar a una consulta.",
+		Description: "Carga en memoria un modelo por id, o embed/rerank/all para el default.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in ModelKindInput) (*mcp.CallToolResult, any, error) {
 		if d.Daemon == nil {
 			return d.fail(errors.New("argosd no está configurado")), nil, nil
@@ -152,7 +159,7 @@ func Register(s *mcp.Server, d Deps) {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "models_unload",
-		Description: "Libera de memoria embed, rerank o all. La próxima búsqueda los recarga.",
+		Description: "Libera de memoria un modelo por id, o embed/rerank/all. La próxima búsqueda lo recarga.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in ModelKindInput) (*mcp.CallToolResult, any, error) {
 		if d.Daemon == nil {
 			return d.fail(errors.New("argosd no está configurado")), nil, nil
@@ -367,6 +374,8 @@ func Register(s *mcp.Server, d Deps) {
 type SearchInput struct {
 	Query       string            `json:"query" jsonschema:"consulta en lenguaje natural"`
 	DB          string            `json:"db,omitempty" jsonschema:"base a consultar; vacío usa la colección de la config"`
+	Model       string            `json:"model,omitempty" jsonschema:"filtra bases por modelo"`
+	ExcludeDBs  []string          `json:"exclude_dbs,omitempty" jsonschema:"bases a excluir"`
 	K           int               `json:"k,omitempty" jsonschema:"pasajes a devolver (default 20)"`
 	MaxPerFile  int               `json:"max_per_file,omitempty" jsonschema:"máximo de pasajes por archivo"`
 	MinScore    float64           `json:"min_score,omitempty" jsonschema:"descarta resultados por debajo de este score"`
@@ -429,7 +438,7 @@ type CatalogInput struct {
 }
 
 type ModelKindInput struct {
-	Model string `json:"model" jsonschema:"embed|rerank|all"`
+	Model string `json:"model" jsonschema:"embed|rerank|all o id del modelo"`
 }
 
 type ModelInput struct {

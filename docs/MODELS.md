@@ -168,7 +168,8 @@ La ficha completa (URLs, hashes, notas, homepage) sigue estando en `models show 
    Sin `--yes`, pide confirmación.
 5. Comprueba espacio libre en disco (necesita `disk_mb × 1.2`).
 6. Descarga cada archivo a `<id>/.tmp`, verifica sha256 y renombra atómicamente. Si falla, borra el
-   `.tmp` y deja el estado anterior intacto. Progreso por archivo con `--progress`.
+   `.tmp` y deja el estado anterior intacto. El progreso se muestra en stdout; no hay flag
+   `--progress` en esta versión.
 7. Escribe `default` en `~/.config/argos/config.yaml`.
 8. Avisa si hay bases creadas con otro modelo (no se tocan).
 
@@ -177,7 +178,8 @@ La ficha completa (URLs, hashes, notas, homepage) sigue estando en `models show 
 Se niega si:
 
 - es el default (sin `--force`),
-- alguna base lo tiene fijado en `meta.json` (sin `--force`).
+- alguna base lo tiene fijado en `meta.json` (sin `--force`),
+- está cargado en `argosd` (sin `--force`).
 
 Con `--force` borra el directorio y avisa qué bases quedan apuntando a un modelo ausente.
 

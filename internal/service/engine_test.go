@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Below-Z3R0/argos/internal/config"
 	dbpkg "github.com/Below-Z3R0/argos/internal/db"
@@ -13,14 +14,22 @@ import (
 	"github.com/Below-Z3R0/argos/internal/types"
 )
 
-type fakeEmbedder struct{ calls int }
+type fakeEmbedder struct {
+	calls int
+	prov  string
+}
 
 func (f *fakeEmbedder) EmbedQuery(context.Context, string) ([]float32, error) {
 	f.calls++
 	return []float32{1, 0}, nil
 }
-func (f *fakeEmbedder) Dim() int         { return 2 }
-func (f *fakeEmbedder) Provider() string { return "CPU" }
+func (f *fakeEmbedder) Dim() int { return 2 }
+func (f *fakeEmbedder) Provider() string {
+	if f.prov == "" {
+		return "CPU"
+	}
+	return f.prov
+}
 
 type fakeStore struct {
 	hits        []types.Hit
@@ -177,6 +186,137 @@ func TestSearchEmbedsOncePerModelAcrossDBs(t *testing.T) {
 	}
 	if emb.calls != 1 {
 		t.Fatalf("query embedded %d times, want 1 for two bases sharing a model", emb.calls)
+	}
+}
+
+func TestSearchDifferentModelsLoadsEachOnce(t *testing.T) {
+	cfg := testConfig(t)
+	cat := &registry.Catalog{Models: []registry.Model{
+		{ID: "embed-a", Name: "A", Task: registry.TaskEmbedding, Tier: "balanced", Default: true, Specs: registry.Specs{Dims: 2}},
+		{ID: "embed-b", Name: "B", Task: registry.TaskEmbedding, Tier: "fast", Specs: registry.Specs{Dims: 3}},
+	}}
+	src := t.TempDir()
+	mgr := dbpkg.New(filepath.Join(cfg.Paths.Home, "dbs"))
+	for _, item := range []struct {
+		name  string
+		model string
+		dims  int
+	}{{"uno", "embed-a", 2}, {"dos", "embed-b", 3}} {
+		dir := filepath.Join(src, item.name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := mgr.Create(dbpkg.Meta{Name: item.name, Source: dir, Model: item.model, Dims: item.dims}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	byModel := map[string]*fakeEmbedder{
+		"embed-a": {prov: "CPU"},
+		"embed-b": {prov: "CUDA"},
+	}
+	e := New(cfg, cat, &fakeStore{hits: []types.Hit{hit("a.md", "x", 0.9, 1)}}, Factories{
+		Embedder: func(m registry.Model, _ int) (Embedder, error) { return byModel[m.ID], nil },
+	})
+	if _, err := e.Search(context.Background(), SearchRequest{Query: "q", DB: "all", Rerank: "off"}); err != nil {
+		t.Fatal(err)
+	}
+	if byModel["embed-a"].calls != 1 || byModel["embed-b"].calls != 1 {
+		t.Fatalf("calls: a=%d b=%d", byModel["embed-a"].calls, byModel["embed-b"].calls)
+	}
+	st := e.Status(context.Background())
+	if st.Provider != "mixed" {
+		t.Fatalf("provider = %q, want mixed", st.Provider)
+	}
+	if len(st.Embedders) != 2 {
+		t.Fatalf("embedders = %v", st.Embedders)
+	}
+}
+
+func TestLoadModelAndUnloadModel(t *testing.T) {
+	cfg := testConfig(t)
+	loads := 0
+	e := New(cfg, catalog(), &fakeStore{}, Factories{
+		Embedder: func(registry.Model, int) (Embedder, error) {
+			loads++
+			return &fakeEmbedder{}, nil
+		},
+	})
+	if err := e.LoadModel(context.Background(), "embed"); err != nil {
+		t.Fatal(err)
+	}
+	if loads != 1 || len(e.Status(context.Background()).Embedders) != 1 {
+		t.Fatalf("loads=%d status=%+v", loads, e.Status(context.Background()))
+	}
+	if err := e.UnloadModel("embed"); err != nil {
+		t.Fatal(err)
+	}
+	if loads != 1 || len(e.Status(context.Background()).Embedders) != 0 {
+		t.Fatalf("unload left state: loads=%d status=%+v", loads, e.Status(context.Background()))
+	}
+	if err := e.LoadModel(context.Background(), "embed"); err != nil {
+		t.Fatal(err)
+	}
+	if loads != 2 {
+		t.Fatalf("second load did not create a new session: %d", loads)
+	}
+}
+
+func TestLoadModelRejectsWhenRAMIsTight(t *testing.T) {
+	cfg := testConfig(t)
+	cat := &registry.Catalog{Models: []registry.Model{
+		{ID: "embed", Name: "E", Task: registry.TaskEmbedding, Tier: "balanced", Default: true,
+			Specs: registry.Specs{Dims: 2, RAMMB: 1024}},
+	}}
+	e := New(cfg, cat, &fakeStore{}, Factories{
+		Embedder: func(registry.Model, int) (Embedder, error) { return &fakeEmbedder{}, nil },
+	})
+	e.ramAvailable = func() int { return 512 }
+	if err := e.LoadModel(context.Background(), "embed"); err == nil {
+		t.Fatal("expected a RAM error")
+	}
+	st := e.Status(context.Background())
+	if len(st.Models) != 1 || st.Models[0].State != "error" {
+		t.Fatalf("state after RAM error: %+v", st.Models)
+	}
+}
+
+func TestStatusDoesNotBlockWhileModelLoads(t *testing.T) {
+	cfg := testConfig(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	e := New(cfg, catalog(), &fakeStore{}, Factories{
+		Embedder: func(registry.Model, int) (Embedder, error) {
+			close(started)
+			<-release
+			return &fakeEmbedder{}, nil
+		},
+	})
+	errCh := make(chan error, 1)
+	go func() { errCh <- e.LoadModel(context.Background(), "embed") }()
+	<-started
+
+	statusCh := make(chan string, 1)
+	go func() {
+		st := e.Status(context.Background())
+		for _, m := range st.Models {
+			if m.Key == "embed:embed/2" {
+				statusCh <- m.State
+				return
+			}
+		}
+		statusCh <- ""
+	}()
+	select {
+	case state := <-statusCh:
+		if state != "loading" {
+			t.Fatalf("state = %q, want loading", state)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Status blocked while the model was loading")
+	}
+	close(release)
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
 	}
 }
 

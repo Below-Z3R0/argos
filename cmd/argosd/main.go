@@ -120,7 +120,14 @@ func main() {
 
 	if preload != "" && preload != "none" {
 		start := time.Now()
-		if err := engine.Load(context.Background(), preload); err != nil {
+		var err error
+		switch preload {
+		case "embed", "rerank", "all":
+			err = engine.Load(context.Background(), preload)
+		default:
+			err = engine.LoadModel(context.Background(), preload)
+		}
+		if err != nil {
 			log.Printf("argosd: preload %s falló: %v", preload, err)
 		} else {
 			log.Printf("argosd: preload %s en %d ms", preload, time.Since(start).Milliseconds())
@@ -131,6 +138,10 @@ func main() {
 		Addr:              addr,
 		Handler:           api.New(engine).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		// Load can take 5 minutes and search 2; keep the writer above both.
+		WriteTimeout: 10 * time.Minute,
+		IdleTimeout:  2 * time.Minute,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -142,7 +153,7 @@ func main() {
 		}
 	}()
 	<-ctx.Done()
-	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	_ = server.Shutdown(shutdown)
 }

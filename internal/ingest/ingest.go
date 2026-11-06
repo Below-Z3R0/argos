@@ -28,7 +28,7 @@ type Embedder interface {
 
 // Store is the subset of Qdrant the pipeline needs.
 type Store interface {
-	EnsureCollection(ctx context.Context, name string, dim int, quantization string) error
+	EnsureCollection(ctx context.Context, name string, dim int, quantization string) (created bool, err error)
 	EnsurePayloadIndexes(ctx context.Context, name string) error
 	UpsertWithWait(ctx context.Context, collection string, points []types.Point, wait bool) error
 	DeleteByIDs(ctx context.Context, collection string, ids []string) error
@@ -90,11 +90,17 @@ func Run(
 	stats.Scanned = len(files)
 
 	if !opts.DryRun {
-		if err := store.EnsureCollection(ctx, opts.Collection, emb.Dim(), opts.Quantization); err != nil {
+		// EnsureCollection reports whether it created the collection. Creating the
+		// payload indexes is only needed for a new collection: doing it on every
+		// index means five repeated Qdrant calls that return "already exists".
+		created, err := store.EnsureCollection(ctx, opts.Collection, emb.Dim(), opts.Quantization)
+		if err != nil {
 			return stats, err
 		}
-		if err := store.EnsurePayloadIndexes(ctx, opts.Collection); err != nil {
-			return stats, err
+		if created {
+			if err := store.EnsurePayloadIndexes(ctx, opts.Collection); err != nil {
+				return stats, err
+			}
 		}
 	}
 
@@ -143,11 +149,18 @@ func indexFile(
 	man *manifest.Manifest,
 	opts Options,
 ) (action string, chunks, embedded, reused int, err error) {
-	hash, err := vault.Hash(file.Path)
+	prev, known, err := man.Get(file.Rel)
 	if err != nil {
 		return "", 0, 0, 0, err
 	}
-	prev, known, err := man.Get(file.Rel)
+	// Stat is enough for the common case: an unchanged file must not be read
+	// and hashed again on every index. A touched file with identical content
+	// still falls through to the hash check below.
+	if !opts.Full && known && prev.Model == opts.Model &&
+		prev.MTime == file.MTime && prev.Size == file.Size {
+		return "skipped", 0, 0, 0, nil
+	}
+	hash, err := vault.Hash(file.Path)
 	if err != nil {
 		return "", 0, 0, 0, err
 	}

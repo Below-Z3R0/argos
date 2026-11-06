@@ -33,6 +33,7 @@ func main() {
 	addr := flag.String("addr", "127.0.0.1:7711", "dirección de escucha")
 	argosctl := flag.String("argosctl", "", "ruta al binario argosctl (default: PATH o ../argos/argosctl)")
 	timeout := flag.Duration("timeout", 60*time.Second, "timeout por invocación del CLI")
+	jobTimeout := flag.Duration("job-timeout", 0, "timeout por job de index/eval (0 = sin límite)")
 	readOnly := flag.Bool("read-only", false, "deshabilita tools que escriben")
 	argosd := flag.String("argosd", "http://127.0.0.1:7712", "URL de argosd para búsquedas (vacío usa el CLI)")
 	showVersion := flag.Bool("version", false, "muestra la versión")
@@ -48,7 +49,10 @@ func main() {
 		log.Fatalf("argos-mcp: %v", err)
 	}
 	r := runner.New(bin, *timeout, 256<<10)
-	jm := jobs.New(r, 20)
+	// Jobs are long by definition: index/eval must not inherit the per-call
+	// timeout that protects interactive tools.
+	jobRunner := runner.New(bin, *jobTimeout, 256<<10)
+	jm := jobs.New(jobRunner, 20)
 
 	srv := mcp.NewServer(&mcp.Implementation{Name: "argos-mcp", Version: version}, nil)
 	reg := metrics.New()
@@ -75,6 +79,10 @@ func main() {
 		Addr:              *addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		// Tool calls can run up to the CLI timeout; jobs are asynchronous.
+		WriteTimeout: 5 * time.Minute,
+		IdleTimeout:  2 * time.Minute,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -88,7 +96,7 @@ func main() {
 	}()
 
 	<-ctx.Done()
-	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_ = httpServer.Shutdown(shutdown)
 }

@@ -139,48 +139,51 @@ probado borrando la colección y recuperando los 7 puntos.
 muestra `descargando 45%` o `descarga incompleta`, y el CLI imprime porcentaje y MB. Si no hay red,
 el error lo dice (`sin conexión o URL inaccesible`) y el estado queda visible; reintentar es seguro.
 
-## Una sola imagen: CPU + NVIDIA (por defecto)
+## Imágenes por variante
 
-La imagen que usa el compose compila con `ORT_FLAVOR=gpu` sobre `nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04`
-y **corre en cualquier host**:
+Argos ya no se construye como una imagen unificada. El runtime vive en `b3l0w-ort` y la app solo
+agrega los binarios:
 
-- En CPU usa el provider CPU: `libonnxruntime.so` no enlaza CUDA y el provider CUDA solo se abre
-  cuando se pide. Verificado: Qwen3 con la lib GPU en esta máquina sin NVIDIA, 39 ms/texto.
-- En NVIDIA, `resources.devices.*: auto` detecta la tarjeta y appendea `CUDAExecutionProvider`.
-- La decisión es en caliente, por modelo (`embed` y `rerank` se eligen por separado).
+```text
+b3l0w-ort:<cpu|cuda|intel|amd>-1.31
+        ↓
+argos:<variante>-<sha>
+```
 
 ```sh
 cd ~/Documents/Docker/argos
-docker compose build                       # imagen unificada (~8.7 GB con cudnn)
-docker compose up -d                       # CPU: funciona tal cual
-docker compose -f compose.yaml -f compose.gpu.yml up -d   # NVIDIA: monta el driver
+docker compose up -d
+docker compose -f compose.yaml -f compose.gpu.yml up -d   # NVIDIA
+docker compose -f compose.yaml -f compose.dri.yml up -d   # Intel/AMD
 ```
 
-La imagen pesa 8.7 GB porque incluye el runtime CUDA completo. En un host que nunca va a tener
-NVIDIA, `runtime-cpu` (416 MB) es la opción razonable.
-
-Para un host sin GPU donde el tamaño importe, existe `runtime-cpu` (416 MB):
+La app se reconstruye sin recompilar ORT:
 
 ```sh
-docker build --target runtime-cpu -t argos:cpu .
+cd ~/Documents/Github/argos
+make image-cpu
+make image-cuda
+make image-intel
+make image-amd
 ```
 
-## AMD e Intel integrada: por qué no están en la misma imagen
+Tamaños de referencia: `argos:cpu` ~416 MB; las bases CUDA/ROCm/OpenVINO son mucho más grandes
+(la base ROCm dev medida: ~3.98 GB; OpenVINO runtime: ~1.84 GB). El detalle está en
+[`IMAGES.md`](IMAGES.md).
 
-No es una decisión de tamaño, es que **no hay un build de ORT que las cubra**:
+En un host sin GPU, la app `cuda` también arranca en CPU; el provider se elige por
+`resources.devices.*`.
 
-- Los releases de ORT 1.31 solo publican assets **CPU** y **CUDA**. No hay `linux-x64-rocm`.
-- Las notas de release lo dicen: **el EP ROCm fue eliminado del árbol**; AMD recomienda MIGraphX.
-- MIGraphX exige compilar ORT desde fuente (`--use_migraphx`) contra el runtime ROCm (~45 min) y
-  produce **otro núcleo** de ORT. No se puede cargar en la misma `libonnxruntime.so` que CUDA.
-- Lo mismo pasa con OpenVINO (Intel iGPU): requiere un build propio con `--use_openvino`.
+## Intel y AMD
 
-Una imagen con CUDA + MIGraphX tendría dos núcleos de ORT y ~8 GB de runtimes de vendor. La vía
-razonable si algún día hay AMD es un target aparte (`runtime-amd`) compilado desde fuente; mientras
-tanto, esa máquina corre en CPU con la misma imagen.
+Intel y AMD usan bases propias porque ORT 1.31 no trae un build único que cubra CUDA, OpenVINO y
+MIGraphX:
 
-`doctor` ahora verifica esto de verdad: appendea cada EP a una sesión y reporta cuáles existen en la
-build, en vez de adivinar por el vendor de la tarjeta.
+- Intel: `b3l0w-ort:intel-1.31` (OpenVINO 2026.4.1).
+- AMD: `b3l0w-ort:amd-1.31` (ROCm 7.2 / MIGraphX 2.15).
+- Ambas necesitan `/dev/dri` para iGPU/dGPU; sin eso caen a CPU.
+
+`doctor` appendea cada EP a una sesión y reporta los que realmente existen en la build.
 
 ## Trade-offs y límites de este enfoque
 
