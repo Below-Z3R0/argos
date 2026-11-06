@@ -3,6 +3,10 @@ name: preflight
 on:
   workflow_dispatch:
 
+concurrency:
+  group: argos-preflight-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -30,7 +34,8 @@ jobs:
           find_package(hipblaslt REQUIRED)
           message(STATUS "AMD preflight OK")
           EOF
-            cmake -S /tmp/preflight -B /tmp/preflight/build
+            cmake -S /tmp/preflight -B /tmp/preflight/build \
+              -DCMAKE_PREFIX_PATH="/opt/rocm;/opt/rocm/hip"
             git clone --depth 1 --branch v1.31.0 https://github.com/microsoft/onnxruntime.git /tmp/ort
             cd /tmp/ort
             ./build.sh --help 2>&1 | grep -q compile_no_warning_as_error
