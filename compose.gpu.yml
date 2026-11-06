@@ -1,0 +1,25 @@
+# Override para hosts con NVIDIA. La imagen ya trae el runtime CUDA y el
+# provider; lo que falta es montar el driver del host en el contenedor.
+#
+#   IMAGE=cuda-latest docker compose -f compose.yaml -f compose.gpu.yml up -d
+#
+# Requiere nvidia-container-toolkit y el driver instalado. En un host sin
+# GPU este archivo no se usa: la misma imagen corre en CPU sin cambios.
+services:
+  argosd:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  argos-mcp:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

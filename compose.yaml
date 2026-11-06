@@ -1,0 +1,119 @@
+# Argos en Docker: Qdrant + argosd + argos-mcp.
+#
+# La imagen se publica en GHCR desde CI: el usuario no compila. El CLI
+# elige la variante según el hardware y pasa el tag en IMAGE.
+#
+#   IMAGE=intel-latest docker compose up -d
+#
+# Los overrides se aplican según la variante:
+#   cuda  → compose.gpu.yml   (reserva NVIDIA)
+#   intel → compose.dri.yml  (monta /dev/dri)
+#   amd   → compose.dri.yml
+#   cpu   → ninguno
+#
+# Los modelos NO están en la imagen: viven en el volumen argos-home y
+# se instalan una vez con el CTL del servicio.
+
+name: argos
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.20.0
+    container_name: argos-qdrant
+    restart: unless-stopped
+    volumes:
+      - argos-qdrant:/qdrant/storage
+      - argos-qdrant-snapshots:/qdrant/snapshots
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  argosd:
+    image: ghcr.io/below-z3r0/argos:${IMAGE:-intel-latest}
+    container_name: argosd
+    restart: unless-stopped
+    command: ["argosd", "--addr", "0.0.0.0:7712"]
+    environment:
+      ARGOS_QDRANT_URL: qdrant:6334
+      ARGOS_LOG_LEVEL: info
+    volumes:
+      - argos-home:/home/argos
+      - ${VAULT_PATH:-${HOME}/Documents/Knowledge}:/vault:ro
+    ports:
+      - "127.0.0.1:7712:7712"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7712/readyz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    # SIGTERM has 30 s to finish in-flight searches; exiting frees the models.
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  argos-mcp:
+    image: ghcr.io/below-z3r0/argos:${IMAGE:-intel-latest}
+    container_name: argos-mcp
+    restart: unless-stopped
+    command:
+      - argos-mcp
+      - --argosctl=/usr/local/bin/argosctl
+      - --argosd=http://argosd:7712
+      - --addr=0.0.0.0:7711
+    environment:
+      ARGOS_QDRANT_URL: qdrant:6334
+      ARGOS_VAULT: /vault
+      ARGOS_SERVICE_URL: http://argosd:7712
+    volumes:
+      - argos-home:/home/argos
+      - ${VAULT_PATH:-${HOME}/Documents/Knowledge}:/vault:ro
+    ports:
+      - "127.0.0.1:7711:7711"
+    depends_on:
+      argosd:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:7711/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # Parser por layout para PDFs complejos (columnas, tablas, escaneos).
+  # No arranca salvo que se pida: docker compose --profile layout up -d
+  # Costo: ~2 GB de RAM y ~4 GB de imagen.
+  docling:
+    image: ghcr.io/docling-project/docling-serve-cpu:v1.37.0
+    container_name: argos-docling
+    profiles: ["layout"]
+    restart: unless-stopped
+    environment:
+      DOCLING_SERVE_ENABLE_UI: "false"
+    volumes:
+      - argos-home:/var/lib/docling
+    ports:
+      - "127.0.0.1:5001:5001"
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+volumes:
+  argos-home:
+  argos-qdrant:
+  argos-qdrant-snapshots:

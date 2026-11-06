@@ -1,0 +1,15 @@
+# Override para Intel iGPU / AMD (MIGraphX): expone el render node.
+#
+#   IMAGE=intel-latest docker compose -f compose.yaml -f compose.dri.yml up -d
+#
+# Requiere pertenecer al grupo render/video del host o ajustar los
+# permisos de /dev/dri. Sin esto, el EP cae a CPU (la imagen sigue
+# funcionando).
+services:
+  argosd:
+    devices:
+      - /dev/dri:/dev/dri
+
+  argos-mcp:
+    devices:
+      - /dev/dri:/dev/dri
