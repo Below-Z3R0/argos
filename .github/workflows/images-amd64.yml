@@ -3,6 +3,10 @@ name: images-amd64
 on:
   workflow_dispatch:
 
+concurrency:
+  group: argos-images-amd64-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: write
@@ -10,18 +14,18 @@ permissions:
 jobs:
   image:
     name: ${{ matrix.variant }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
         variant: [cpu, gpu, intel, amd]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # The ORT source build needs more than the default 14 GB on a clean
       # runner. This frees the preinstalled toolchains we do not use.
-      - uses: jlumbroso/free-disk-space@v2
+      - uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2
         with:
           tool-cache: true
           android: true
@@ -30,16 +34,16 @@ jobs:
           large-packages: true
           swap-storage: true
 
-      - uses: docker/setup-buildx-action@v3.10.0
+      - uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3.10.0
 
-      - uses: docker/login-action@v3.3.0
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6.15.0
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
         with:
           context: .
           file: Dockerfile
@@ -57,3 +61,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/Below-Z3R0/argos
             org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Smoke test the published binary
+        run: docker run --rm ghcr.io/below-z3r0/argos:${{ matrix.variant }}-${{ github.sha }} argosctl version
