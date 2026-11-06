@@ -252,3 +252,22 @@ func TestDryRunTouchesNothing(t *testing.T) {
 		t.Fatalf("dry run wrote: stats=%+v points=%d", stats, len(store.points))
 	}
 }
+
+func TestParentDirsListsEveryAncestor(t *testing.T) {
+	got := parentDirs("learning/projects/argos/README.md")
+	want := []string{"learning", "learning/projects", "learning/projects/argos"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestParentDirsIgnoresTopLevelFiles(t *testing.T) {
+	if got := parentDirs("Home.md"); got != nil {
+		t.Fatalf("top-level file got %v, want nil", got)
+	}
+}

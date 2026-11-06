@@ -82,6 +82,9 @@ func Register(s *mcp.Server, d Deps) {
 		for k, v := range in.Filter {
 			args = append(args, "--filter", k+"="+v)
 		}
+		if in.PathPrefix != "" {
+			args = append(args, "--path-prefix", in.PathPrefix)
+		}
 		return d.run(ctx, args...)
 	})
 
@@ -383,6 +386,7 @@ type SearchInput struct {
 	Mode        string            `json:"mode,omitempty" jsonschema:"dense|hybrid; vacío usa la config"`
 	RerankDepth int               `json:"rerank_depth,omitempty" jsonschema:"candidatos que pasan por el reranker"`
 	Filter      map[string]string `json:"filter,omitempty" jsonschema:"filtros de payload, por ejemplo {\"lang\":\"es\"}"`
+	PathPrefix  string            `json:"path_prefix,omitempty" jsonschema:"limita a una carpeta del corpus, por ejemplo work o learning/projects"`
 }
 
 type DBNameInput struct {

@@ -134,6 +134,7 @@ func (s *Store) EnsurePayloadIndexes(ctx context.Context, collection string) err
 		ftype qdrant.FieldType
 	}{
 		{"path", qdrant.FieldType_FieldTypeKeyword},
+		{"dirs", qdrant.FieldType_FieldTypeKeyword},
 		{"file_hash", qdrant.FieldType_FieldTypeKeyword},
 		{"mtime", qdrant.FieldType_FieldTypeInteger},
 		{"tags", qdrant.FieldType_FieldTypeKeyword},

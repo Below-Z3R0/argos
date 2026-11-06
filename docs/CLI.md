@@ -111,6 +111,7 @@ argosctl db rm <N> --force
 
 ```text
 argosctl search "<q>" [--db NOMBRE|a,b|all] [--model M] [--exclude-db N]
+                      [--path-prefix CARPETA]
                       [-k 20] [--max-per-file 2]
                       [--rerank auto|on|off] [--rerank-depth N]
                       [--mode dense|hybrid] [--min-score F]
@@ -118,6 +119,11 @@ argosctl search "<q>" [--db NOMBRE|a,b|all] [--model M] [--exclude-db N]
 ```
 
 - `--db` elige base, lista o `all`; sin él usa `index.collection`.
+- `--path-prefix` limita a una carpeta del corpus: `work`, `university`,
+  `learning/projects`. Cada chunk guarda en `dirs` todas sus carpetas padre, así
+  que el filtro es un match exacto sobre esa lista y vale para cualquier
+  profundidad. Requiere un índice construido con esta versión: las colecciones
+  viejas no tienen el campo.
 - `--local` no consulta `argosd`.
 - `--rerank auto` usa el reranker si está instalado; `on` falla si falta; `off` solo vectorial.
 - `--mode` vacío usa `search.hybrid`.

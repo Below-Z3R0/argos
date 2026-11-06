@@ -8,6 +8,9 @@ package ingest
 import (
 	"context"
 	"fmt"
+	"path"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Below-Z3R0/argos/internal/chunk"
@@ -238,6 +241,7 @@ func indexFile(
 				SparseValues:  sv.Values,
 				Payload: map[string]any{
 					"path":         file.Rel,
+					"dirs":         parentDirs(file.Rel),
 					"heading":      c.Heading,
 					"chunk_index":  c.Index,
 					"content_hash": c.Hash,
@@ -295,6 +299,23 @@ func upsertBatches(ctx context.Context, store Store, collection string, points [
 		}
 	}
 	return nil
+}
+
+// parentDirs lists every ancestor folder of a relative path. Storing them in
+// the payload lets a search restrict itself to a subtree with one keyword
+// match: "work" matches work/a/b.md, and "learning/projects" matches anything
+// below that folder.
+func parentDirs(rel string) []string {
+	dir := path.Dir(filepath.ToSlash(rel))
+	if dir == "." || dir == "/" {
+		return nil
+	}
+	parts := strings.Split(strings.Trim(dir, "/"), "/")
+	out := make([]string, 0, len(parts))
+	for i := range parts {
+		out = append(out, strings.Join(parts[:i+1], "/"))
+	}
+	return out
 }
 
 // prune removes points of files that no longer exist on disk.

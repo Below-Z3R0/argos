@@ -21,6 +21,8 @@ Referencia de cada tool MCP. Todas ejecutan `argosctl`; el JSON de `search` es e
 | `rerank` | string | auto | `auto\|on\|off` |
 | `mode` | string | config | `dense\|hybrid` |
 | `rerank_depth` | int | pool | Candidatos que pasan por el reranker |
+| `path_prefix` | string | — | Limita a una carpeta: `work`, `university`, `learning/projects` |
+| `filter` | object | — | Filtros de payload exactos (`{“lang”: “es”}`) |
 
 Devuelve `{query, collection, model, mode, elapsed_ms, hits:[{db, path, heading, text, score, tokens, chunk_index}], warnings?}`.
 `warnings` aparece cuando el reranker estaba en `auto` y no se pudo cargar.

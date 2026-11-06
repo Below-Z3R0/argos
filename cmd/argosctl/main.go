@@ -1932,12 +1932,13 @@ func cmdSearch(args []string) error {
 	localOnly := fs.Bool("local", false, "no usar argosd; corre el pipeline local")
 	filter := newKVFlag()
 	fs.Var(filter, "filter", "filtro payload k=v (repetible)")
+	pathPrefix := fs.String("path-prefix", "", "limita a una carpeta del corpus (ej. work, learning/projects)")
 	// Accept the query before the flags: `search "x" --db y` is what people
 	// type, and the stdlib parser stops at the first positional argument.
 	withValue := map[string]bool{
 		"-k": true, "--k": true, "--db": true, "--min-score": true,
 		"--max-per-file": true, "--rerank": true, "--rerank-depth": true, "--mode": true,
-		"--model": true, "--exclude-db": true,
+		"--model": true, "--exclude-db": true, "--path-prefix": true, "--filter": true,
 	}
 	var flagArgs, positional []string
 	for i := 0; i < len(args); i++ {
@@ -1971,13 +1972,22 @@ func cmdSearch(args []string) error {
 	}
 	// Fast path: the resident service already has the models loaded. --local
 	// forces the process-local pipeline, which is also the MCP fallback path.
+	filters := filter.Map()
+	if p := strings.Trim(*pathPrefix, "/"); p != "" {
+		if filters == nil {
+			filters = map[string]string{}
+		}
+		// "dirs" holds every ancestor folder of a chunk, so one exact match
+		// restricts the search to that subtree.
+		filters["dirs"] = p
+	}
 	if !*localOnly && cfg.Service.URL != "" {
-		if done, err := searchViaService(cfg, *dbName, *modelFilter, *excludeDB, query, *k, *maxPerFile, *minScore, *rerankMode, *mode, *rerankDepth, *asJSON, *explain, filter.Map()); done {
+		if done, err := searchViaService(cfg, *dbName, *modelFilter, *excludeDB, query, *k, *maxPerFile, *minScore, *rerankMode, *mode, *rerankDepth, *asJSON, *explain, filters); done {
 			return err
 		}
 	}
 	return localEngineSearch(cfg, *dbName, *modelFilter, *excludeDB, query, *k, *maxPerFile,
-		*minScore, *rerankMode, *mode, *rerankDepth, *asJSON, *explain, filter.Map())
+		*minScore, *rerankMode, *mode, *rerankDepth, *asJSON, *explain, filters)
 }
 
 func truncate(s string, n int) string {
