@@ -127,6 +127,7 @@ RUN git clone --depth 1 --branch "v${ORT_VERSION}" --recurse-submodules \
 WORKDIR /ort
 RUN ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
       --skip_submodule_sync --use_openvino CPU \
+      --compile_no_warning_as_error \
       --allow_running_as_root --build_dir /build
 
 FROM openvino/ubuntu24_runtime:2026.4.1 AS runtime-intel
@@ -176,6 +177,7 @@ RUN git clone --depth 1 --branch "v${ORT_VERSION}" --recurse-submodules \
 WORKDIR /ort
 RUN ./build.sh --config Release --build_shared_lib --parallel --skip_tests \
       --skip_submodule_sync --use_migraphx --migraphx_home /opt/rocm \
+      --compile_no_warning_as_error \
       --allow_running_as_root --build_dir /build
 
 FROM rocm/dev-ubuntu-24.04:6.4 AS runtime-amd
