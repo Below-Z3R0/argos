@@ -1,0 +1,61 @@
+name: preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  amd:
+    name: AMD MIGraphX dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check MIGraphX CMake packages
+        run: |
+          docker run --rm rocm/dev-ubuntu-24.04:6.4 bash -euxo pipefail -c '
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              cmake git migraphx-dev miopen-hip-dev rocblas-dev hipblaslt-dev half
+            mkdir -p /tmp/preflight
+            cat >/tmp/preflight/CMakeLists.txt <<"EOF"
+          cmake_minimum_required(VERSION 3.20)
+          project(preflight CXX)
+          find_package(Threads REQUIRED)
+          find_package(hip REQUIRED)
+          find_package(migraphx REQUIRED)
+          find_package(MIOpen REQUIRED)
+          find_package(rocblas REQUIRED)
+          find_package(hipblaslt REQUIRED)
+          message(STATUS "AMD preflight OK")
+          EOF
+            cmake -S /tmp/preflight -B /tmp/preflight/build
+            git clone --depth 1 --branch v1.31.0 https://github.com/microsoft/onnxruntime.git /tmp/ort
+            cd /tmp/ort
+            ./build.sh --help 2>&1 | grep -q compile_no_warning_as_error
+          '
+
+  intel:
+    name: Intel OpenVINO dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check OpenVINO CMake packages
+        run: |
+          docker run --rm --user root openvino/ubuntu24_dev:2026.4.1 bash -euxo pipefail -c '
+            mkdir -p /tmp/preflight
+            cat >/tmp/preflight/CMakeLists.txt <<"EOF"
+          cmake_minimum_required(VERSION 3.20)
+          project(preflight CXX)
+          find_package(OpenVINO REQUIRED COMPONENTS Runtime ONNX)
+          if(OpenVINO_VERSION VERSION_LESS 2026.0)
+            message(FATAL_ERROR "OpenVINO ${OpenVINO_VERSION} is too old")
+          endif()
+          message(STATUS "Intel preflight OK: OpenVINO ${OpenVINO_VERSION}")
+          EOF
+            cmake -S /tmp/preflight -B /tmp/preflight/build
+            git clone --depth 1 --branch v1.31.0 https://github.com/microsoft/onnxruntime.git /tmp/ort
+            cd /tmp/ort
+            ./build.sh --help 2>&1 | grep -q compile_no_warning_as_error
+          '
