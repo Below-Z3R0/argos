@@ -11,8 +11,16 @@
 #   amd   → compose.dri.yml
 #   cpu   → ninguno
 #
-# Los modelos NO están en la imagen: viven en el volumen argos-home y
-# se instalan una vez con el CTL del servicio.
+# Los modelos NO están en la imagen: viven en el estado compartido y se
+# instalan una vez con el CTL del servicio.
+#
+# El estado se bind-montea desde el host para que el CLI nativo y los
+# contenedores hablen del mismo sitio: una sola copia de modelos, bases y
+# manifiestos. El uid del host (1000) es el del usuario `argos` de la imagen.
+#
+# El vault se monta en la MISMA ruta absoluta que en el host porque
+# `dbs/<nombre>/meta.json` guarda la ruta del corpus tal cual: si difiere, el
+# indexado dentro del contenedor no encuentra la fuente.
 
 name: argos
 
@@ -44,9 +52,14 @@ services:
     environment:
       ARGOS_QDRANT_URL: qdrant:6334
       ARGOS_LOG_LEVEL: info
+      ARGOS_HOME: ${ARGOS_HOME:-${HOME}/.local/share/argos}
+      ARGOS_VAULT: ${VAULT_PATH:-${HOME}/Documents/Knowledge}
     volumes:
-      - argos-home:/home/argos
-      - ${VAULT_PATH:-${HOME}/Documents/Knowledge}:/vault:ro
+      # Estado compartido: la misma ruta absoluta dentro y fuera, para que el
+      # config del host (paths.home, paths.vault) apunte al mismo sitio.
+      - ${ARGOS_HOME:-${HOME}/.local/share/argos}:${ARGOS_HOME:-${HOME}/.local/share/argos}
+      - ${HOME}/.config/argos:/home/argos/.config/argos
+      - ${VAULT_PATH:-${HOME}/Documents/Knowledge}:${VAULT_PATH:-${HOME}/Documents/Knowledge}:ro
     ports:
       - "127.0.0.1:7712:7712"
     depends_on:
@@ -75,11 +88,13 @@ services:
       - --addr=0.0.0.0:7711
     environment:
       ARGOS_QDRANT_URL: qdrant:6334
-      ARGOS_VAULT: /vault
+      ARGOS_VAULT: ${VAULT_PATH:-${HOME}/Documents/Knowledge}
       ARGOS_SERVICE_URL: http://argosd:7712
+      ARGOS_HOME: ${ARGOS_HOME:-${HOME}/.local/share/argos}
     volumes:
-      - argos-home:/home/argos
-      - ${VAULT_PATH:-${HOME}/Documents/Knowledge}:/vault:ro
+      - ${ARGOS_HOME:-${HOME}/.local/share/argos}:${ARGOS_HOME:-${HOME}/.local/share/argos}
+      - ${HOME}/.config/argos:/home/argos/.config/argos
+      - ${VAULT_PATH:-${HOME}/Documents/Knowledge}:${VAULT_PATH:-${HOME}/Documents/Knowledge}:ro
     ports:
       - "127.0.0.1:7711:7711"
     depends_on:
@@ -106,7 +121,9 @@ services:
     environment:
       DOCLING_SERVE_ENABLE_UI: "false"
     volumes:
-      - argos-home:/var/lib/docling
+      # Cache de layout: es del servicio, no del estado de Argos. Named volume
+      # para no dejar archivos root-owned en el home del host.
+      - argos-docling:/var/lib/docling
     ports:
       - "127.0.0.1:5001:5001"
     logging:
@@ -114,6 +131,6 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
 volumes:
-  argos-home:
+  argos-docling:
   argos-qdrant:
   argos-qdrant-snapshots:
