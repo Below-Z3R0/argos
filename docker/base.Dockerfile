@@ -121,7 +121,9 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git cmake ninja-build build-essential python3 \
       migraphx-dev miopen-hip-dev rocblas-dev hipblaslt-dev half \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /opt/rocm/include/migraphx \
+    && ln -sf /opt/rocm/lib/migraphx/include/migraphx/version.h /opt/rocm/include/migraphx/version.h
 RUN git clone --depth 1 --branch "v${ORT_VERSION}" --recurse-submodules \
       --shallow-submodules https://github.com/microsoft/onnxruntime.git /ort
 WORKDIR /ort
