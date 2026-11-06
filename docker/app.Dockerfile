@@ -13,6 +13,8 @@ FROM golang:1.27-bookworm AS build
 ARG TOKENIZERS_VERSION=1.27.0
 ARG TARGETARCH=amd64
 ARG GIT_SHA=dev
+ARG VERSION=dev
+ARG BUILD_DATE=unknown
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential ca-certificates curl \
@@ -30,9 +32,16 @@ RUN go mod download
 COPY . .
 
 ENV CGO_ENABLED=1 CGO_LDFLAGS="-L/opt/libtokenizers"
-RUN go build -trimpath -ldflags "-s -w" -o /out/argosctl ./cmd/argosctl \
-    && go build -trimpath -ldflags "-s -w" -o /out/argosd ./cmd/argosd \
-    && go build -trimpath -ldflags "-s -w" -o /out/argos-mcp ./cmd/argos-mcp
+# Build metadata lands in every binary so `argosctl version` identifies the
+# commit that produced the image.
+RUN set -eux; \
+    ldflags="-s -w \
+      -X github.com/Below-Z3R0/argos/internal/version.Version=${VERSION} \
+      -X github.com/Below-Z3R0/argos/internal/version.Commit=${GIT_SHA} \
+      -X github.com/Below-Z3R0/argos/internal/version.Date=${BUILD_DATE}"; \
+    go build -trimpath -ldflags "$ldflags" -o /out/argosctl ./cmd/argosctl; \
+    go build -trimpath -ldflags "$ldflags" -o /out/argosd ./cmd/argosd; \
+    go build -trimpath -ldflags "$ldflags" -o /out/argos-mcp ./cmd/argos-mcp
 
 FROM ${BASE_IMAGE}
 
