@@ -168,7 +168,7 @@ FROM rocm/dev-ubuntu-24.04:6.4 AS ort-amd
 ARG ORT_VERSION=1.31.0
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git cmake ninja-build build-essential python3 migraphx-dev miopen-hip-dev \
+      git cmake ninja-build build-essential python3 migraphx-dev miopen-hip-dev rocblas-dev hipblaslt-dev half \
     && rm -rf /var/lib/apt/lists/*
 
 RUN git clone --depth 1 --branch "v${ORT_VERSION}" --recurse-submodules \
@@ -187,7 +187,7 @@ LABEL org.opencontainers.image.revision=$GIT_SHA
 USER root
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl poppler-utils tini libstdc++6 libgomp1 passwd migraphx miopen-hip \
+      ca-certificates curl poppler-utils tini libstdc++6 libgomp1 passwd migraphx miopen-hip half \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ort-amd /build/Release/libonnxruntime.so* /usr/local/lib/
